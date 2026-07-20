@@ -50,3 +50,9 @@ describe the addon protocol this module is compatible with. The module contains
 no Stremio source code; it is an independent implementation of the publicly
 documented [addon protocol](https://stremio.github.io/stremio-addon-sdk/), which
 is itself published under the MIT License.
+
+## License
+
+MIT (see [`LICENSE`](LICENSE)). This module depends only on the Apache-2.0
+[Mosaic SDK](https://github.com/mosaic-media/mosaic-sdk); it may be compiled into
+a Mosaic Platform binary under the Platform's Module Linking Exception.
