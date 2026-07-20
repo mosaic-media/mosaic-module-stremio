@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -30,15 +31,42 @@ const (
 var _ v1.Capability = (*Capability)(nil)
 
 // Capability is the Stremio addon-source module (ADR 0008's capability
-// surface, first populated). It holds only its protocol client and drives
-// ContentService; it owns no schema and imports no Platform internals.
+// surface, first populated). It holds only an HTTP client; the addons it
+// sources from come from its user-managed settings at invocation time (ADR
+// 0021), so the same registered module serves whatever addons each user
+// configures. It owns no schema and imports no Platform internals.
 type Capability struct {
-	client *Client
+	httpClient *http.Client
 }
 
-// New builds the capability over a configured protocol client.
-func New(client *Client) *Capability {
-	return &Capability{client: client}
+// New builds the capability over an HTTP client (nil for a default). Addon
+// URLs are not supplied here — they arrive as settings on each Import.
+func New(httpClient *http.Client) *Capability {
+	return &Capability{httpClient: httpClient}
+}
+
+// moduleSettings is the shape the Stremio module reads from its user-managed
+// settings document: the list of Stremio addon base URLs to source from.
+type moduleSettings struct {
+	Addons []string `json:"addons"`
+}
+
+// addonsFrom parses the module's settings document into a clean addon list.
+func addonsFrom(settings []byte) ([]string, error) {
+	if len(settings) == 0 {
+		return nil, nil
+	}
+	var s moduleSettings
+	if err := json.Unmarshal(settings, &s); err != nil {
+		return nil, fmt.Errorf("parse module settings: %w", err)
+	}
+	var out []string
+	for _, a := range s.Addons {
+		if t := strings.TrimSpace(a); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }
 
 // Manifest is the module's self-declaration.
@@ -52,13 +80,23 @@ func (c *Capability) Manifest() v1.Manifest {
 // creates the Work with an external-id binding, builds the tree, and attaches
 // a RemoteLocation Part wherever a stream addon serves one. Metadata alone is
 // a complete import; streams are additive.
-func (c *Capability) Import(ctx context.Context, svc v1.ContentService, caller v1.Caller, query string) (v1.ImportResult, error) {
-	typ, id, err := parseQuery(query)
+func (c *Capability) Import(ctx context.Context, svc v1.ContentService, req v1.ImportRequest) (v1.ImportResult, error) {
+	addons, err := addonsFrom(req.Settings)
+	if err != nil {
+		return v1.ImportResult{}, err
+	}
+	if len(addons) == 0 {
+		return v1.ImportResult{}, fmt.Errorf(`no Stremio addons configured; add one with configureModule (settings {"addons":["<manifest-url>"]})`)
+	}
+	client := NewClient(c.httpClient, addons...)
+	caller := req.Caller
+
+	typ, id, err := parseQuery(req.Query)
 	if err != nil {
 		return v1.ImportResult{}, err
 	}
 
-	meta, ok, err := c.client.Meta(ctx, typ, id)
+	meta, ok, err := client.Meta(ctx, typ, id)
 	if err != nil {
 		return v1.ImportResult{}, fmt.Errorf("fetch metadata: %w", err)
 	}
@@ -97,9 +135,9 @@ func (c *Capability) Import(ctx context.Context, svc v1.ContentService, caller v
 
 	switch typ {
 	case "movie":
-		err = c.importMovie(ctx, svc, caller, work.Work.ID, id, &result)
+		err = c.importMovie(ctx, client, svc, caller, work.Work.ID, id, &result)
 	case "series":
-		err = c.importSeries(ctx, svc, caller, work.Work.ID, id, meta, &result)
+		err = c.importSeries(ctx, client, svc, caller, work.Work.ID, id, meta, &result)
 	default:
 		// An unknown type still has a Work and a binding; there is simply no
 		// tree shape defined for it here, so it lands as a bare work.
@@ -113,7 +151,7 @@ func (c *Capability) Import(ctx context.Context, svc v1.ContentService, caller v
 
 // importMovie builds a film as Work -> feature item, attaching the stream to
 // the item (a Part attaches to an item, never a work — ADR 0013).
-func (c *Capability) importMovie(ctx context.Context, svc v1.ContentService, caller v1.Caller, workID v1.NodeID, id string, result *v1.ImportResult) error {
+func (c *Capability) importMovie(ctx context.Context, client *Client, svc v1.ContentService, caller v1.Caller, workID v1.NodeID, id string, result *v1.ImportResult) error {
 	item, err := svc.AddContentChild(ctx, v1.AddContentChildCommand{
 		Caller: caller, ParentID: workID,
 		Kind: v1.NodeItem, ItemType: v1.ItemFeature,
@@ -123,13 +161,13 @@ func (c *Capability) importMovie(ctx context.Context, svc v1.ContentService, cal
 		return fmt.Errorf("create feature item: %w", err)
 	}
 	result.Items++
-	return c.attachStream(ctx, svc, caller, item.Node.ID, "movie", id, result)
+	return c.attachStream(ctx, client, svc, caller, item.Node.ID, "movie", id, result)
 }
 
 // importSeries builds a series as Work -> season container -> episode item,
 // grouping the meta's flat video list by season, and attaching each episode's
 // stream to its item.
-func (c *Capability) importSeries(ctx context.Context, svc v1.ContentService, caller v1.Caller, workID v1.NodeID, id string, meta Meta, result *v1.ImportResult) error {
+func (c *Capability) importSeries(ctx context.Context, client *Client, svc v1.ContentService, caller v1.Caller, workID v1.NodeID, id string, meta Meta, result *v1.ImportResult) error {
 	for _, season := range groupBySeason(meta.Videos) {
 		container, err := svc.AddContentChild(ctx, v1.AddContentChildCommand{
 			Caller: caller, ParentID: workID,
@@ -153,7 +191,7 @@ func (c *Capability) importSeries(ctx context.Context, svc v1.ContentService, ca
 			result.Items++
 
 			episodeID := fmt.Sprintf("%s:%d:%d", id, season.number, ep.Episode)
-			if err := c.attachStream(ctx, svc, caller, item.Node.ID, "series", episodeID, result); err != nil {
+			if err := c.attachStream(ctx, client, svc, caller, item.Node.ID, "series", episodeID, result); err != nil {
 				return err
 			}
 		}
@@ -164,8 +202,8 @@ func (c *Capability) importSeries(ctx context.Context, svc v1.ContentService, ca
 // attachStream fetches a stream for the content id and, if a stream addon
 // served one, attaches it as a RemoteLocation Part. No stream is not an error:
 // a meta-only import creates the tree without Parts.
-func (c *Capability) attachStream(ctx context.Context, svc v1.ContentService, caller v1.Caller, itemID v1.NodeID, typ, id string, result *v1.ImportResult) error {
-	stream, ok, err := c.client.Stream(ctx, typ, id)
+func (c *Capability) attachStream(ctx context.Context, client *Client, svc v1.ContentService, caller v1.Caller, itemID v1.NodeID, typ, id string, result *v1.ImportResult) error {
+	stream, ok, err := client.Stream(ctx, typ, id)
 	if err != nil {
 		return fmt.Errorf("fetch stream for %s: %w", id, err)
 	}

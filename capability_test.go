@@ -23,10 +23,12 @@ import (
 func TestImportMovie(t *testing.T) {
 	server := fakeAddon(withStreams)
 	defer server.Close()
-	cap := stremio.New(stremio.NewClient(server.Client(), server.URL))
+	cap := stremio.New(server.Client())
 	content := newFakeContent()
 
-	res, err := cap.Import(context.Background(), content, v1.CallerFromSession("s-1"), "movie/tt1254207")
+	res, err := cap.Import(context.Background(), content, v1.ImportRequest{
+		Caller: v1.CallerFromSession("s-1"), Query: "movie/tt1254207", Settings: addonSettings(server.URL),
+	})
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
@@ -67,10 +69,12 @@ func TestImportMovie(t *testing.T) {
 func TestImportSeries(t *testing.T) {
 	server := fakeAddon(withStreams)
 	defer server.Close()
-	cap := stremio.New(stremio.NewClient(server.Client(), server.URL))
+	cap := stremio.New(server.Client())
 	content := newFakeContent()
 
-	res, err := cap.Import(context.Background(), content, v1.CallerFromSession("s-1"), "series/tt0903747")
+	res, err := cap.Import(context.Background(), content, v1.ImportRequest{
+		Caller: v1.CallerFromSession("s-1"), Query: "series/tt0903747", Settings: addonSettings(server.URL),
+	})
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
@@ -98,10 +102,12 @@ func TestImportMetadataOnlyWhenAddonHasNoStreams(t *testing.T) {
 	// metadata without adopting remote streaming.
 	server := fakeAddon(metaOnly)
 	defer server.Close()
-	cap := stremio.New(stremio.NewClient(server.Client(), server.URL))
+	cap := stremio.New(server.Client())
 	content := newFakeContent()
 
-	res, err := cap.Import(context.Background(), content, v1.CallerFromSession("s-1"), "movie/tt1254207")
+	res, err := cap.Import(context.Background(), content, v1.ImportRequest{
+		Caller: v1.CallerFromSession("s-1"), Query: "movie/tt1254207", Settings: addonSettings(server.URL),
+	})
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
@@ -116,15 +122,16 @@ func TestImportMetadataOnlyWhenAddonHasNoStreams(t *testing.T) {
 func TestImportIsIdempotent(t *testing.T) {
 	server := fakeAddon(withStreams)
 	defer server.Close()
-	cap := stremio.New(stremio.NewClient(server.Client(), server.URL))
+	cap := stremio.New(server.Client())
 	content := newFakeContent()
 	ctx := context.Background()
 
-	first, err := cap.Import(ctx, content, v1.CallerFromSession("s-1"), "movie/tt1254207")
+	req := v1.ImportRequest{Caller: v1.CallerFromSession("s-1"), Query: "movie/tt1254207", Settings: addonSettings(server.URL)}
+	first, err := cap.Import(ctx, content, req)
 	if err != nil {
 		t.Fatalf("first Import: %v", err)
 	}
-	second, err := cap.Import(ctx, content, v1.CallerFromSession("s-1"), "movie/tt1254207")
+	second, err := cap.Import(ctx, content, req)
 	if err != nil {
 		t.Fatalf("second Import: %v", err)
 	}
@@ -140,10 +147,31 @@ func TestImportIsIdempotent(t *testing.T) {
 }
 
 func TestImportRejectsMalformedQuery(t *testing.T) {
-	cap := stremio.New(stremio.NewClient(nil))
-	if _, err := cap.Import(context.Background(), newFakeContent(), v1.CallerFromSession("s-1"), "tt1254207"); err == nil {
+	cap := stremio.New(nil)
+	// An addon is configured so the query is what's rejected, not the settings.
+	_, err := cap.Import(context.Background(), newFakeContent(), v1.ImportRequest{
+		Caller: v1.CallerFromSession("s-1"), Query: "tt1254207", Settings: addonSettings("http://unused.example"),
+	})
+	if err == nil {
 		t.Fatal("a query without a type/ prefix must be rejected")
 	}
+}
+
+func TestImportRequiresConfiguredAddons(t *testing.T) {
+	cap := stremio.New(nil)
+	// No settings at all: the module has no addon to source from.
+	_, err := cap.Import(context.Background(), newFakeContent(), v1.ImportRequest{
+		Caller: v1.CallerFromSession("s-1"), Query: "movie/tt1254207",
+	})
+	if err == nil {
+		t.Fatal("an import with no addons configured must be rejected")
+	}
+}
+
+// addonSettings builds a module-settings document naming the given addon URLs.
+func addonSettings(urls ...string) []byte {
+	b, _ := json.Marshal(map[string][]string{"addons": urls})
+	return b
 }
 
 // ---- fake Stremio addon ----
