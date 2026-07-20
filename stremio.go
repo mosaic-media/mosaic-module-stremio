@@ -27,22 +27,50 @@ type resolvedAddon struct {
 	fetched  bool
 }
 
-// NewClient builds a client over the given addon base URLs. A nil httpClient
-// gets a default with a sane timeout. Addon manifests are not fetched here;
-// they are fetched on first use so construction stays offline.
+// NewClient builds a client over the given addon URLs. A nil httpClient gets a
+// default with a sane timeout. Each URL is normalised to the addon's base URL
+// (see normaliseAddonURL) so that either the base URL or the manifest URL a
+// user copies from Stremio works. Manifests are not fetched here; they are
+// fetched on first use so construction stays offline.
 func NewClient(httpClient *http.Client, addonURLs ...string) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	addons := make([]*resolvedAddon, 0, len(addonURLs))
 	for _, u := range addonURLs {
-		trimmed := strings.TrimRight(strings.TrimSpace(u), "/")
-		if trimmed == "" {
+		base := normaliseAddonURL(u)
+		if base == "" {
 			continue
 		}
-		addons = append(addons, &resolvedAddon{baseURL: trimmed})
+		addons = append(addons, &resolvedAddon{baseURL: base})
 	}
 	return &Client{http: httpClient, addons: addons}
+}
+
+// normaliseAddonURL turns whatever a user pastes into an addon's base URL — the
+// prefix the client appends "/manifest.json", "/meta/..." and "/stream/..." to.
+// Stremio's "Install"/"Copy link" hands out the manifest URL (ending in
+// "/manifest.json"), and installs use the stremio:// scheme, so both are
+// accepted alongside a bare base URL. A trailing "/manifest.json" is stripped
+// rather than the whole path, preserving the configuration segment addons like
+// Torrentio encode before it (".../providers=.../manifest.json"). A trailing
+// slash is trimmed. Empty input yields "", which the caller skips.
+func normaliseAddonURL(u string) string {
+	s := strings.TrimSpace(u)
+	if s == "" {
+		return ""
+	}
+	// Stremio installs use stremio://; the transport underneath is HTTPS.
+	if rest, ok := strings.CutPrefix(s, "stremio://"); ok {
+		s = "https://" + rest
+	}
+	// Drop any query or fragment before deriving the base.
+	if i := strings.IndexAny(s, "?#"); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimRight(s, "/")
+	s = strings.TrimSuffix(s, "/manifest.json")
+	return strings.TrimRight(s, "/")
 }
 
 // Manifest is the subset of a Stremio addon manifest this client reads.
@@ -242,11 +270,19 @@ func hasAnyPrefix(s string, prefixes []string) bool {
 	return false
 }
 
+// userAgent identifies this client to addons. It matters for reachability, not
+// just courtesy: Cloudflare-fronted addons (Torrentio and many popular stream
+// addons) reject Go's default "Go-http-client/1.1" User-Agent with a 403, while
+// any honest custom identifier is served. So this is set on every request.
+const userAgent = "mosaic-module-stremio/" + moduleVersion
+
 func (c *Client) getJSON(ctx context.Context, url string, out interface{}) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err

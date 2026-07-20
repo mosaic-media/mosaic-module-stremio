@@ -26,11 +26,26 @@ supported.
 ## Configuration
 
 Addons are user-managed settings, set through the Platform at runtime — a JSON
-document naming the addon base URLs:
+document naming the addons. Either an addon's base URL or the `…/manifest.json`
+URL you copy from Stremio works (the `stremio://` install scheme is accepted
+too); they are normalised to the same base.
 
 ```json
-{ "addons": ["https://v3-cinemeta.strem.io"] }
+{
+  "addons": [
+    "https://v3-cinemeta.strem.io/manifest.json",
+    "https://torrentio.strem.fun/manifest.json"
+  ]
+}
 ```
+
+**Metadata and streams come from different addons.** A metadata addon (e.g.
+Cinemeta) serves the `meta` resource and builds the library — Works, seasons,
+episodes — but no playable Parts. A stream addon (e.g. Torrentio) serves the
+`stream` resource and adds `RemoteLocation` Parts. Configure a metadata addon
+to see a library at all, and add a stream addon as well if you want stream
+references. With only a metadata addon, an import is complete but has no
+streams — that is the meta-only case working as intended, not a failure.
 
 ## Build
 
