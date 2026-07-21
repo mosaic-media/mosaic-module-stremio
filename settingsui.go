@@ -2,10 +2,9 @@ package stremio
 
 import (
 	"context"
-	"encoding/json"
 
 	v1 "github.com/mosaic-media/sdk/contracts/platform/v1"
-	sdui "github.com/mosaic-media/sdui/sdui"
+	"github.com/mosaic-media/sdui/ui"
 )
 
 // SettingsUI renders the module's own settings screen as SDUI (RoleSettingsUI,
@@ -29,18 +28,18 @@ func (c *Capability) SettingsUI(ctx context.Context, req v1.SettingsUIRequest) (
 		return v1.SettingsUIResponse{}, err
 	}
 
-	body := []sdui.Node{
+	body := []ui.El{
 		addAddonSection(addons, disableDefaults),
 		installedSection(ctx, client, addons, disableDefaults),
 		browseSection(ctx, client, addons, disableDefaults),
 	}
-	screen := sdui.Screen(sdui.Prop("title", "Stremio addons"), sdui.Child(body...))
+	screen := ui.Screen(ui.Title("Stremio addons"), ui.Group(body...))
 
-	ui, err := json.Marshal(screen)
+	data, err := screen.BuildJSON()
 	if err != nil {
 		return v1.SettingsUIResponse{}, err
 	}
-	return v1.SettingsUIResponse{UI: ui}, nil
+	return v1.SettingsUIResponse{UI: data}, nil
 }
 
 // configureInput builds the configureModule invoke input for a given user-addon
@@ -57,14 +56,14 @@ func configureInput(addons []string, disableDefaults bool) map[string]any {
 // addAddonSection is the add-by-URL form: a SubmitField whose action carries the
 // existing addons plus the "$value" placeholder the runtime fills with the typed
 // manifest URL (ADR 0038).
-func addAddonSection(addons []string, disableDefaults bool) sdui.Node {
+func addAddonSection(addons []string, disableDefaults bool) *ui.Element {
 	withNew := append(append([]string{}, addons...), "$value")
-	field := sdui.Component("SubmitField",
-		sdui.Prop("placeholder", "Paste an addon manifest URL…"),
-		sdui.Prop("submitLabel", "Add"),
-		sdui.Act(sdui.Invoke("configureModule", configureInput(withNew, disableDefaults))),
+	field := ui.Component("SubmitField",
+		ui.Prop("placeholder", "Paste an addon manifest URL…"),
+		ui.Prop("submitLabel", "Add"),
+		ui.OnTap(ui.Invoke("configureModule", configureInput(withNew, disableDefaults))),
 	)
-	return sdui.Section("Add an addon", sdui.Child(field))
+	return ui.Section("Add an addon", field)
 }
 
 // installedSection renders the effective addon set as a grid of cards. The
@@ -72,28 +71,28 @@ func addAddonSection(addons []string, disableDefaults bool) sdui.Node {
 // same URL: as the default (a Disable that also strips any duplicate from the
 // user list) when enabled, else as a plain user addon. A configurable addon
 // carries a Configure control that opens its own configuration page.
-func installedSection(ctx context.Context, client *Client, userAddons []string, disableDefaults bool) sdui.Node {
+func installedSection(ctx context.Context, client *Client, userAddons []string, disableDefaults bool) *ui.Element {
 	defaultBase := normaliseAddonURL(defaultAddon)
 	userByBase := make(map[string]string, len(userAddons))
 	for _, u := range userAddons {
 		userByBase[normaliseAddonURL(u)] = u
 	}
 
-	cards := make([]sdui.Node, 0)
+	cards := make([]ui.El, 0)
 	for _, info := range client.InstalledAddons(ctx) {
-		var controls []sdui.Node
+		var controls []ui.El
 		if info.Base == defaultBase && !disableDefaults {
 			// The bundled default. Disabling it also removes any duplicate the
 			// user added explicitly, so Cinemeta is fully gone.
 			controls = append(controls,
-				sdui.Badge("Default", sdui.ToneNeutral),
-				sdui.Button("Disable", "ghost", sdui.Invoke("configureModule", configureInput(withoutBase(userAddons, defaultBase), true))))
+				ui.Badge("Default", ui.ToneNeutral),
+				ui.Button("Disable", "ghost", ui.OnTap(ui.Invoke("configureModule", configureInput(withoutBase(userAddons, defaultBase), true)))))
 		} else {
 			if info.Configurable {
-				controls = append(controls, sdui.Button("Configure", "secondary", sdui.OpenURL(info.Base+"/configure")))
+				controls = append(controls, ui.Button("Configure", "secondary", ui.OnTap(ui.OpenURL(info.Base+"/configure"))))
 			}
 			orig := userByBase[info.Base]
-			controls = append(controls, sdui.Button("Remove", "danger", sdui.Invoke("configureModule", configureInput(without(userAddons, orig), disableDefaults))))
+			controls = append(controls, ui.Button("Remove", "danger", ui.OnTap(ui.Invoke("configureModule", configureInput(without(userAddons, orig), disableDefaults)))))
 		}
 		cards = append(cards, addonCard(info.Name, info.Logo, info.Description, controls...))
 	}
@@ -102,21 +101,21 @@ func installedSection(ctx context.Context, client *Client, userAddons []string, 
 	// to re-enable it, so the toggle stays reachable.
 	if disableDefaults && userByBase[defaultBase] == "" {
 		cards = append(cards, addonCard("Cinemeta", "", "The bundled default metadata addon — currently disabled.",
-			sdui.Badge("Disabled", sdui.ToneNeutral),
-			sdui.Button("Enable", "secondary", sdui.Invoke("configureModule", configureInput(userAddons, false)))))
+			ui.Badge("Disabled", ui.ToneNeutral),
+			ui.Button("Enable", "secondary", ui.OnTap(ui.Invoke("configureModule", configureInput(userAddons, false))))))
 	}
 
-	return sdui.Section("Installed addons", sdui.Child(sdui.Grid(sdui.Child(cards...))))
+	return ui.Section("Installed addons", ui.Grid(cards...))
 }
 
 // browseSection renders installable addons from the addon_catalog resource as a
 // grid of cards, each with its name/logo from the catalog's inline manifest.
 // Best-effort: with no addon-catalog source it shows an empty state.
-func browseSection(ctx context.Context, client *Client, userAddons []string, disableDefaults bool) sdui.Node {
+func browseSection(ctx context.Context, client *Client, userAddons []string, disableDefaults bool) *ui.Element {
 	entries, err := client.AddonCatalog(ctx)
 	if err != nil || len(entries) == 0 {
-		return sdui.Section("Browse addons",
-			sdui.Child(sdui.EmptyState("collections", "No addon catalog available — configure an addon that provides one to browse installable addons here")))
+		return ui.Section("Browse addons",
+			ui.EmptyState("collections", "No addon catalog available — configure an addon that provides one to browse installable addons here"))
 	}
 
 	installed := make(map[string]bool)
@@ -127,7 +126,7 @@ func browseSection(ctx context.Context, client *Client, userAddons []string, dis
 		installed[normaliseAddonURL(u)] = true
 	}
 
-	cards := make([]sdui.Node, 0, len(entries))
+	cards := make([]ui.El, 0, len(entries))
 	for _, e := range entries {
 		// Only offer addons Mosaic can actually use — those that fill one of the
 		// provider roles it sources (metadata, catalog/search, stream, subtitles).
@@ -141,48 +140,48 @@ func browseSection(ctx context.Context, client *Client, userAddons []string, dis
 			name = e.TransportURL
 		}
 		if installed[normaliseAddonURL(e.TransportURL)] {
-			cards = append(cards, addonCard(name, e.Manifest.Logo, e.Manifest.Description, sdui.Badge("Installed", sdui.ToneSuccess)))
+			cards = append(cards, addonCard(name, e.Manifest.Logo, e.Manifest.Description, ui.Badge("Installed", ui.ToneSuccess)))
 			continue
 		}
 		withNew := append(append([]string{}, userAddons...), e.TransportURL)
 		cards = append(cards, addonCard(name, e.Manifest.Logo, e.Manifest.Description,
-			sdui.Button("Install", "primary", sdui.Invoke("configureModule", configureInput(withNew, disableDefaults)))))
+			ui.Button("Install", "primary", ui.OnTap(ui.Invoke("configureModule", configureInput(withNew, disableDefaults))))))
 	}
-	disclaimer := sdui.Banner("Mosaic doesn't support every Stremio addon. This list is filtered to likely-compatible ones, but addons are community-made — add them at your own risk.", sdui.ToneWarning)
+	disclaimer := ui.Banner("Mosaic doesn't support every Stremio addon. This list is filtered to likely-compatible ones, but addons are community-made — add them at your own risk.", ui.ToneWarning)
 	if len(cards) == 0 {
-		return sdui.Section("Browse addons",
-			sdui.Child(disclaimer, sdui.EmptyState("collections", "No compatible addons to browse right now")))
+		return ui.Section("Browse addons",
+			disclaimer, ui.EmptyState("collections", "No compatible addons to browse right now"))
 	}
-	return sdui.Section("Browse addons", sdui.Child(disclaimer, sdui.Grid(sdui.Child(cards...))))
+	return ui.Section("Browse addons", disclaimer, ui.Grid(cards...))
 }
 
 // addonCard is one addon tile: a logo + name header, a clamped description, and
 // a trailing control row, laid out for a responsive grid.
-func addonCard(name, logo, description string, controls ...sdui.Node) sdui.Node {
-	header := make([]sdui.Node, 0, 2)
+func addonCard(name, logo, description string, controls ...ui.El) *ui.Element {
+	header := make([]ui.El, 0, 2)
 	if logo != "" {
-		header = append(header, sdui.Component("Box",
-			sdui.Prop("style", map[string]any{"width": 40, "height": 40, "radius": "md", "overflow": "hidden", "bg": "surface-overlay", "shrink": false}),
-			sdui.Child(sdui.Component("Image", sdui.Prop("src", logo), sdui.Prop("fit", "contain"),
-				sdui.Prop("placeholder", " "), sdui.Prop("style", map[string]any{"width": "full", "height": "full"})))))
+		header = append(header, ui.Component("Box",
+			ui.Prop("style", map[string]any{"width": 40, "height": 40, "radius": "md", "overflow": "hidden", "bg": "surface-overlay", "shrink": false}),
+			ui.Component("Image", ui.Prop("src", logo), ui.Prop("fit", "contain"),
+				ui.Prop("placeholder", " "), ui.Prop("style", map[string]any{"width": "full", "height": "full"}))))
 	}
-	header = append(header, sdui.Component("Text", sdui.Prop("text", name),
-		sdui.Prop("style", map[string]any{"weight": "medium", "lineClamp": 1})))
+	header = append(header, ui.Component("Text", ui.Prop("text", name),
+		ui.Prop("style", map[string]any{"weight": "medium", "lineClamp": 1})))
 
-	children := []sdui.Node{
-		sdui.Component("Box", sdui.Prop("style", map[string]any{"direction": "row", "align": "center", "gap": 3}), sdui.Child(header...)),
+	children := []ui.El{
+		ui.Component("Box", ui.Prop("style", map[string]any{"direction": "row", "align": "center", "gap": 3}), ui.Group(header...)),
 	}
 	if description != "" {
-		children = append(children, sdui.Component("Text", sdui.Prop("text", description),
-			sdui.Prop("style", map[string]any{"variant": "sm", "color": "text-muted", "lineClamp": 2})))
+		children = append(children, ui.Component("Text", ui.Prop("text", description),
+			ui.Prop("style", map[string]any{"variant": "sm", "color": "text-muted", "lineClamp": 2})))
 	}
-	children = append(children, sdui.Component("Box",
-		sdui.Prop("style", map[string]any{"direction": "row", "gap": 2, "wrap": true, "mt": "auto", "pt": 2}),
-		sdui.Child(controls...)))
+	children = append(children, ui.Component("Box",
+		ui.Prop("style", map[string]any{"direction": "row", "gap": 2, "wrap": true, "mt": "auto", "pt": 2}),
+		ui.Group(controls...)))
 
-	return sdui.Component("Box",
-		sdui.Prop("style", map[string]any{"direction": "column", "gap": 2, "p": 4, "radius": "lg", "bg": "surface-raised", "border": true, "minHeight": 132}),
-		sdui.Child(children...))
+	return ui.Component("Box",
+		ui.Prop("style", map[string]any{"direction": "column", "gap": 2, "p": 4, "radius": "lg", "bg": "surface-raised", "border": true, "minHeight": 132}),
+		ui.Group(children...))
 }
 
 // deniedAddonIDs is a curated deny-list of community addons that are not content
