@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -220,12 +221,23 @@ func (v Video) EpisodeTitle() string {
 }
 
 // Stream is the subset of a stream object this client reads. A stream is
-// either a direct URL or a torrent identified by InfoHash.
+// either a direct URL or a torrent identified by InfoHash. Description/
+// BehaviorHints carry the release detail (quality, size) addons pack into the
+// title, which parseStreamMeta teases back out (ADR 0037).
 type Stream struct {
-	Name     string `json:"name"`
-	Title    string `json:"title"`
-	URL      string `json:"url"`
-	InfoHash string `json:"infoHash"`
+	Name          string        `json:"name"`
+	Title         string        `json:"title"`
+	Description   string        `json:"description"`
+	URL           string        `json:"url"`
+	InfoHash      string        `json:"infoHash"`
+	FileIdx       int           `json:"fileIdx"`
+	BehaviorHints behaviorHints `json:"behaviorHints"`
+}
+
+// behaviorHints is the subset of a stream's behaviorHints this client reads.
+type behaviorHints struct {
+	VideoSize int64  `json:"videoSize"`
+	Filename  string `json:"filename"`
 }
 
 // Ref is the location reference to store for this stream: the direct URL when
@@ -239,6 +251,20 @@ func (s Stream) Ref() string {
 		return "magnet:?xt=urn:btih:" + s.InfoHash
 	}
 	return ""
+}
+
+// text is the stream's descriptive text — the title, then name, then filename —
+// where addons (Torrentio especially) pack quality, size and seeders.
+func (s Stream) text() string {
+	return strings.Join([]string{s.Title, s.Name, s.Description, s.BehaviorHints.Filename}, "\n")
+}
+
+// Subtitle is the subset of a subtitles response entry this client reads (ADR
+// 0037): a track's language and the file URL.
+type Subtitle struct {
+	ID   string `json:"id"`
+	URL  string `json:"url"`
+	Lang string `json:"lang"`
 }
 
 // Meta fetches metadata for a content id from the first configured addon whose
@@ -291,6 +317,31 @@ func (c *Client) Stream(ctx context.Context, typ, id string) (Stream, bool, erro
 		}
 	}
 	return Stream{}, false, nil
+}
+
+// Subtitles fetches subtitle tracks for a content id (a movie id or an episode
+// id of the form tt...:season:episode) from the first addon whose manifest
+// serves the subtitles resource for the type. It returns ok=false, no error,
+// when no configured addon serves subtitles (ADR 0037).
+func (c *Client) Subtitles(ctx context.Context, typ, id string) ([]Subtitle, bool, error) {
+	for _, a := range c.addons {
+		if err := c.ensureManifest(ctx, a); err != nil {
+			return nil, false, err
+		}
+		if !supports(a.manifest, "subtitles", typ, id) {
+			continue
+		}
+		var resp struct {
+			Subtitles []Subtitle `json:"subtitles"`
+		}
+		if err := c.getJSON(ctx, a.baseURL+"/subtitles/"+typ+"/"+id+".json", &resp); err != nil {
+			return nil, false, err
+		}
+		if len(resp.Subtitles) > 0 {
+			return resp.Subtitles, true, nil
+		}
+	}
+	return nil, false, nil
 }
 
 // Catalogs returns the catalog declarations across every configured addon, in
@@ -435,6 +486,66 @@ func hasAnyPrefix(s string, prefixes []string) bool {
 		}
 	}
 	return false
+}
+
+// streamMeta is the release detail parsed out of a stream's descriptive text and
+// behaviorHints (ADR 0037): quality, size and swarm health. All fields are
+// best-effort — addons pack this into free text, so a miss leaves a field zero.
+type streamMeta struct {
+	quality   string
+	sizeBytes int64
+	seeders   int
+}
+
+var (
+	qualityRe = regexp.MustCompile(`(?i)\b(2160p|4k|1080p|720p|480p|360p)\b`)
+	// Torrentio and kin mark seeders with a person glyph before the count.
+	seedersRe = regexp.MustCompile(`👤\s*(\d+)`)
+	sizeRe    = regexp.MustCompile(`(?i)([\d.]+)\s*(TB|GB|MB)`)
+)
+
+// parseStreamMeta teases the release detail out of a stream.
+func parseStreamMeta(s Stream) streamMeta {
+	text := s.text()
+	m := streamMeta{}
+	if q := qualityRe.FindString(text); q != "" {
+		m.quality = normaliseQuality(q)
+	}
+	if s.BehaviorHints.VideoSize > 0 {
+		m.sizeBytes = s.BehaviorHints.VideoSize
+	} else if sz := sizeRe.FindStringSubmatch(text); sz != nil {
+		m.sizeBytes = sizeToBytes(sz[1], sz[2])
+	}
+	if sd := seedersRe.FindStringSubmatch(text); sd != nil {
+		m.seeders, _ = strconv.Atoi(sd[1])
+	}
+	return m
+}
+
+// normaliseQuality collapses "4K" onto the resolution label the rest use.
+func normaliseQuality(q string) string {
+	if strings.EqualFold(q, "4k") {
+		return "2160p"
+	}
+	return strings.ToLower(q)
+}
+
+// sizeToBytes converts a parsed "2.3 GB" pair to bytes (decimal units, as
+// addons report them).
+func sizeToBytes(num, unit string) int64 {
+	f, err := strconv.ParseFloat(num, 64)
+	if err != nil {
+		return 0
+	}
+	switch strings.ToUpper(unit) {
+	case "TB":
+		return int64(f * 1e12)
+	case "GB":
+		return int64(f * 1e9)
+	case "MB":
+		return int64(f * 1e6)
+	}
+	return 0
 }
 
 // userAgent identifies this client to addons. It matters for reachability, not

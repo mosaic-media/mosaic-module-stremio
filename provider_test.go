@@ -137,3 +137,65 @@ func TestStreamsEmptyForMetaOnlyAddon(t *testing.T) {
 		t.Fatalf("streams = %d, want none from a meta-only addon", len(resp.Streams))
 	}
 }
+
+func TestStreamsCarryReleaseDetail(t *testing.T) {
+	server := fakeAddon(withStreams)
+	defer server.Close()
+	cap := stremio.New(server.Client())
+
+	resp, err := cap.Streams(context.Background(), v1.StreamRequest{
+		Caller: v1.CallerFromSession("s-1"), Settings: addonSettings(server.URL), Ref: movieRef("tt1254207"),
+	})
+	if err != nil {
+		t.Fatalf("Streams: %v", err)
+	}
+	if len(resp.Streams) != 1 {
+		t.Fatalf("streams = %d, want 1", len(resp.Streams))
+	}
+	s := resp.Streams[0]
+	// The quality, seeders and size are parsed out of the addon's title (ADR 0037).
+	if s.Quality != "1080p" {
+		t.Errorf("quality = %q, want 1080p", s.Quality)
+	}
+	if s.Seeders != 45 {
+		t.Errorf("seeders = %d, want 45", s.Seeders)
+	}
+	if s.SizeBytes != 2_300_000_000 {
+		t.Errorf("sizeBytes = %d, want 2.3e9", s.SizeBytes)
+	}
+}
+
+func TestSubtitlesResolve(t *testing.T) {
+	server := fakeAddon(withStreams)
+	defer server.Close()
+	cap := stremio.New(server.Client())
+
+	resp, err := cap.Subtitles(context.Background(), v1.SubtitlesRequest{
+		Caller: v1.CallerFromSession("s-1"), Settings: addonSettings(server.URL), Ref: movieRef("tt1254207"),
+	})
+	if err != nil {
+		t.Fatalf("Subtitles: %v", err)
+	}
+	if len(resp.Subtitles) != 2 {
+		t.Fatalf("subtitles = %d, want 2", len(resp.Subtitles))
+	}
+	if resp.Subtitles[0].Language != "eng" || resp.Subtitles[0].URL == "" {
+		t.Fatalf("first subtitle = %+v, want eng with a url", resp.Subtitles[0])
+	}
+}
+
+func TestSubtitlesEmptyForMetaOnlyAddon(t *testing.T) {
+	server := fakeAddon(metaOnly)
+	defer server.Close()
+	cap := stremio.New(server.Client())
+
+	resp, err := cap.Subtitles(context.Background(), v1.SubtitlesRequest{
+		Caller: v1.CallerFromSession("s-1"), Settings: addonSettings(server.URL), Ref: movieRef("tt1254207"),
+	})
+	if err != nil {
+		t.Fatalf("Subtitles: %v", err)
+	}
+	if len(resp.Subtitles) != 0 {
+		t.Fatalf("subtitles = %d, want none from a meta-only addon", len(resp.Subtitles))
+	}
+}

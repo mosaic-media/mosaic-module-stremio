@@ -157,20 +157,26 @@ func TestImportRejectsEmptyRef(t *testing.T) {
 	}
 }
 
-func TestImportRequiresConfiguredAddons(t *testing.T) {
+func TestImportRejectsWhenNoAddonAndDefaultDisabled(t *testing.T) {
 	cap := stremio.New(nil)
-	// No settings at all: the module has no addon to source from.
+	// With the bundled default (Cinemeta) there is always an addon to source
+	// from, so the only "no addon" state left is opting the default out and
+	// configuring nothing — which must still be rejected. (Empty settings would
+	// use Cinemeta over the network; this opt-out path stays hermetic.)
 	_, err := cap.Import(context.Background(), newFakeContent(), v1.ImportRequest{
 		Caller: v1.CallerFromSession("s-1"), Ref: movieRef("tt1254207"),
+		Settings: []byte(`{"disableDefaultAddons":true}`),
 	})
 	if err == nil {
-		t.Fatal("an import with no addons configured must be rejected")
+		t.Fatal("an import with the default disabled and no addons configured must be rejected")
 	}
 }
 
 // addonSettings builds a module-settings document naming the given addon URLs.
+// It opts out of the bundled default (Cinemeta) so these tests stay hermetic
+// against their fake addon and never reach the network.
 func addonSettings(urls ...string) []byte {
-	b, _ := json.Marshal(map[string][]string{"addons": urls})
+	b, _ := json.Marshal(map[string]any{"addons": urls, "disableDefaultAddons": true})
 	return b
 }
 
@@ -195,7 +201,7 @@ const (
 
 // fakeAddon serves a canned manifest, meta and (optionally) stream over HTTP.
 func fakeAddon(mode addonMode) *httptest.Server {
-	resources := []string{"meta", "stream"}
+	resources := []string{"meta", "stream", "subtitles"}
 	if mode == metaOnly {
 		resources = []string{"meta"}
 	}
@@ -241,9 +247,19 @@ func fakeAddon(mode addonMode) *httptest.Server {
 				},
 			}})
 		case strings.HasPrefix(path, "/stream/"):
-			// One direct-play stream for whatever id was asked.
+			// One direct-play stream for whatever id was asked, with the release
+			// detail packed into the title the way real addons do (ADR 0037).
 			writeJSON(w, map[string]interface{}{"streams": []map[string]interface{}{
-				{"name": "Fake 1080p", "url": "http://cdn.example/" + strings.TrimSuffix(path[len("/stream/"):], ".json")},
+				{
+					"name":  "Fake",
+					"title": "Movie.Name.2017.1080p.BluRay.x264\n👤 45 💾 2.3 GB ⚙️ Source",
+					"url":   "http://cdn.example/" + strings.TrimSuffix(path[len("/stream/"):], ".json"),
+				},
+			}})
+		case strings.HasPrefix(path, "/subtitles/"):
+			writeJSON(w, map[string]interface{}{"subtitles": []map[string]interface{}{
+				{"id": "en-1", "lang": "eng", "url": "http://cdn.example/subs/en.srt"},
+				{"id": "es-1", "lang": "spa", "url": "http://cdn.example/subs/es.srt"},
 			}})
 		default:
 			http.NotFound(w, r)

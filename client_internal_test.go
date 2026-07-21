@@ -34,6 +34,54 @@ func TestNormaliseAddonURL(t *testing.T) {
 	}
 }
 
+// TestDefaultAddonBundled pins that Cinemeta is present from the get-go with no
+// configuration, that user addons add to it deduped, and that the default can be
+// opted out (ADR 0035).
+func TestDefaultAddonBundled(t *testing.T) {
+	cap := New(nil)
+	base := func(addons []*resolvedAddon) []string {
+		out := make([]string, len(addons))
+		for i, a := range addons {
+			out[i] = a.baseURL
+		}
+		return out
+	}
+	cinemeta := normaliseAddonURL(defaultAddon)
+
+	// No settings → Cinemeta bundled.
+	c, err := cap.clientFrom(nil)
+	if err != nil {
+		t.Fatalf("clientFrom(nil): %v", err)
+	}
+	if got := base(c.addons); len(got) != 1 || got[0] != cinemeta {
+		t.Fatalf("default addons = %v, want just Cinemeta %q", got, cinemeta)
+	}
+
+	// A user addon adds to the default, deduped, default first.
+	c, err = cap.clientFrom([]byte(`{"addons":["https://torrentio.strem.fun/manifest.json","https://v3-cinemeta.strem.io/manifest.json"]}`))
+	if err != nil {
+		t.Fatalf("clientFrom(user addons): %v", err)
+	}
+	got := base(c.addons)
+	if len(got) != 2 || got[0] != cinemeta || got[1] != "https://torrentio.strem.fun" {
+		t.Fatalf("merged addons = %v, want [cinemeta, torrentio] deduped", got)
+	}
+
+	// Opt out of the default with a user addon → only the user addon.
+	c, err = cap.clientFrom([]byte(`{"addons":["https://torrentio.strem.fun/manifest.json"],"disableDefaultAddons":true}`))
+	if err != nil {
+		t.Fatalf("clientFrom(opt-out): %v", err)
+	}
+	if got := base(c.addons); len(got) != 1 || got[0] != "https://torrentio.strem.fun" {
+		t.Fatalf("opt-out addons = %v, want just torrentio", got)
+	}
+
+	// Opt out with nothing configured → the only error path left.
+	if _, err = cap.clientFrom([]byte(`{"disableDefaultAddons":true}`)); err == nil {
+		t.Fatal("clientFrom with default disabled and no addons should error")
+	}
+}
+
 // TestClientSetsUserAgent pins that requests carry the module's own User-Agent
 // rather than Go's default, which Cloudflare-fronted addons reject with 403.
 // It also proves an addon configured by its manifest URL is reachable — the

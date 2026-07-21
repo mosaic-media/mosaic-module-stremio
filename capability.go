@@ -17,7 +17,7 @@ const (
 	// caller names to invoke it.
 	CapabilityID = "stremio"
 	// moduleVersion is this module's own version, reported in its Manifest.
-	moduleVersion = "0.3.0"
+	moduleVersion = "0.4.0"
 	// providerScheme is the external-id scheme and source-binding provider the
 	// module keys content under: Stremio content is identified by IMDB id.
 	providerScheme = "imdb"
@@ -25,48 +25,59 @@ const (
 	// Part. The bytes are resolved later (the future Remote Media module); the
 	// binding only records where the reference came from.
 	streamProvider = "stremio"
+	// defaultAddon is bundled from the get-go so metadata and search work with no
+	// configuration (ADR 0035): Cinemeta is Stremio's reference metadata/catalog
+	// addon. A user's configured addons add to it; a user can opt out with the
+	// disableDefaultAddons setting.
+	defaultAddon = "https://v3-cinemeta.strem.io/manifest.json"
 )
 
 // Capability satisfies the SDK's capability contract and every provider role it
 // declares in its Manifest. The assertions fail to compile if the module drifts
 // from what the Platform invokes or from a role it claims to fill (ADR 0027).
 var (
-	_ v1.Capability       = (*Capability)(nil)
-	_ v1.MetadataProvider = (*Capability)(nil)
-	_ v1.SearchProvider   = (*Capability)(nil)
-	_ v1.CatalogProvider  = (*Capability)(nil)
-	_ v1.StreamProvider   = (*Capability)(nil)
+	_ v1.Capability        = (*Capability)(nil)
+	_ v1.MetadataProvider  = (*Capability)(nil)
+	_ v1.SearchProvider    = (*Capability)(nil)
+	_ v1.CatalogProvider   = (*Capability)(nil)
+	_ v1.StreamProvider    = (*Capability)(nil)
+	_ v1.SubtitlesProvider = (*Capability)(nil)
 )
 
 // Capability is the Stremio addon-source module (ADR 0008's capability
 // surface, first populated). It holds only an HTTP client; the addons it
-// sources from come from its user-managed settings at invocation time (ADR
-// 0021), so the same registered module serves whatever addons each user
-// configures. It owns no schema and imports no Platform internals.
+// sources from are the bundled default (Cinemeta) plus whatever a user adds
+// through its settings at invocation time (ADR 0021), so metadata and search
+// work out of the box and the same registered module serves whatever else each
+// user configures. It owns no schema and imports no Platform internals.
 type Capability struct {
 	httpClient *http.Client
 }
 
-// New builds the capability over an HTTP client (nil for a default). Addon
-// URLs are not supplied here — they arrive as settings on each Import.
+// New builds the capability over an HTTP client (nil for a default). Addon URLs
+// are not supplied here — the bundled default is always present and user addons
+// arrive as settings on each invocation.
 func New(httpClient *http.Client) *Capability {
 	return &Capability{httpClient: httpClient}
 }
 
 // moduleSettings is the shape the Stremio module reads from its user-managed
-// settings document: the list of Stremio addon base URLs to source from.
+// settings document: the list of Stremio addon base URLs to source from, and an
+// opt-out for the bundled default (Cinemeta) that is otherwise always included.
 type moduleSettings struct {
-	Addons []string `json:"addons"`
+	Addons               []string `json:"addons"`
+	DisableDefaultAddons bool     `json:"disableDefaultAddons"`
 }
 
-// addonsFrom parses the module's settings document into a clean addon list.
-func addonsFrom(settings []byte) ([]string, error) {
+// addonsFrom parses the module's settings document into a clean user-addon list
+// and the default opt-out flag.
+func addonsFrom(settings []byte) ([]string, bool, error) {
 	if len(settings) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	var s moduleSettings
 	if err := json.Unmarshal(settings, &s); err != nil {
-		return nil, fmt.Errorf("parse module settings: %w", err)
+		return nil, false, fmt.Errorf("parse module settings: %w", err)
 	}
 	var out []string
 	for _, a := range s.Addons {
@@ -74,20 +85,37 @@ func addonsFrom(settings []byte) ([]string, error) {
 			out = append(out, t)
 		}
 	}
-	return out, nil
+	return out, s.DisableDefaultAddons, nil
 }
 
-// clientFrom builds a client over the addons configured in settings, or returns
-// an error naming how to configure one when none are set. Every entry point —
-// Import and each provider role — starts here, so the "no addons" message is
-// identical wherever a user hits it.
+// clientFrom builds a client over the bundled default addon plus whatever the
+// user configured (deduped by base URL). Cinemeta is present from the get-go so
+// metadata and search work with no configuration (ADR 0035); a user can add
+// stream and other addons on top, and opt the default out. The "no addons" error
+// is only reachable if the default is disabled and nothing else is set.
 func (c *Capability) clientFrom(settings []byte) (*Client, error) {
-	addons, err := addonsFrom(settings)
+	userAddons, disableDefaults, err := addonsFrom(settings)
 	if err != nil {
 		return nil, err
 	}
+	seen := make(map[string]bool)
+	var addons []string
+	add := func(u string) {
+		base := normaliseAddonURL(u)
+		if base == "" || seen[base] {
+			return
+		}
+		seen[base] = true
+		addons = append(addons, u)
+	}
+	if !disableDefaults {
+		add(defaultAddon)
+	}
+	for _, u := range userAddons {
+		add(u)
+	}
 	if len(addons) == 0 {
-		return nil, fmt.Errorf(`no Stremio addons configured; add one with configureModule (settings {"addons":["<manifest-url>"]})`)
+		return nil, fmt.Errorf(`no Stremio addons configured; add one with configureModule (settings {"addons":["<manifest-url>"]}) or re-enable the bundled Cinemeta addon`)
 	}
 	return NewClient(c.httpClient, addons...), nil
 }
@@ -98,7 +126,7 @@ func (c *Capability) clientFrom(settings []byte) (*Client, error) {
 func (c *Capability) Manifest() v1.Manifest {
 	return v1.Manifest{
 		ID: CapabilityID, Version: moduleVersion, Name: "Stremio addon source",
-		Provides: []v1.Role{v1.RoleMetadata, v1.RoleSearch, v1.RoleCatalog, v1.RoleStream},
+		Provides: []v1.Role{v1.RoleMetadata, v1.RoleSearch, v1.RoleCatalog, v1.RoleStream, v1.RoleSubtitles},
 	}
 }
 
@@ -437,10 +465,44 @@ func (c *Capability) Streams(ctx context.Context, req v1.StreamRequest) (v1.Stre
 	if !ok {
 		return v1.StreamResponse{}, nil
 	}
-	return v1.StreamResponse{Streams: []v1.StreamLink{{
-		Label:    stream.Name,
-		Location: v1.MediaLocation{Scheme: v1.RemoteLocation, Provider: streamProvider, Ref: stream.Ref()},
-	}}}, nil
+	return v1.StreamResponse{Streams: []v1.StreamLink{streamLinkFrom(stream)}}, nil
+}
+
+// streamLinkFrom maps a Stremio stream to the SDK StreamLink, parsing the release
+// detail (quality, size, seeders) a source-picker will rank on (ADR 0037).
+func streamLinkFrom(stream Stream) v1.StreamLink {
+	meta := parseStreamMeta(stream)
+	return v1.StreamLink{
+		Label:     stream.Name,
+		Title:     stream.Title,
+		Quality:   meta.quality,
+		SizeBytes: meta.sizeBytes,
+		Seeders:   meta.seeders,
+		Location:  v1.MediaLocation{Scheme: v1.RemoteLocation, Provider: streamProvider, Ref: stream.Ref()},
+	}
+}
+
+// Subtitles resolves subtitle tracks for a materialised item's ref (RoleSubtitles
+// — the addon `subtitles` resource, ADR 0037). Like Streams it is a source role;
+// the consumer is a player that does not exist yet, so this is built ahead of it.
+// It returns an empty response, no error, when no addon serves subtitles.
+func (c *Capability) Subtitles(ctx context.Context, req v1.SubtitlesRequest) (v1.SubtitlesResponse, error) {
+	client, err := c.clientFrom(req.Settings)
+	if err != nil {
+		return v1.SubtitlesResponse{}, err
+	}
+	subs, ok, err := client.Subtitles(ctx, req.Ref.NativeType, req.Ref.NativeID)
+	if err != nil {
+		return v1.SubtitlesResponse{}, fmt.Errorf("resolve subtitles: %w", err)
+	}
+	if !ok {
+		return v1.SubtitlesResponse{}, nil
+	}
+	out := make([]v1.Subtitle, 0, len(subs))
+	for _, s := range subs {
+		out = append(out, v1.Subtitle{Language: s.Lang, URL: s.URL, ID: s.ID})
+	}
+	return v1.SubtitlesResponse{Subtitles: out}, nil
 }
 
 // refFrom builds a ContentRef from a catalog/search preview. Stremio content is
