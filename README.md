@@ -1,9 +1,9 @@
-# mosaic-module-stremio
+# module-stremio-addons
 
 Stremio addon-source module for the [Mosaic](https://github.com/mosaic-media) platform — a Go client of the Stremio addon protocol, built against the Mosaic SDK.
 
 It is an **optional Mosaic module**: its own Go module that imports only
-[`mosaic-sdk`](https://github.com/mosaic-media/mosaic-sdk) and the standard
+[`sdk`](https://github.com/mosaic-media/sdk) and the standard
 library, compiled into a Mosaic Platform binary and invoked through the
 Platform's capability registry. It owns no schema; everything it does goes
 through the published `ContentService`.
@@ -49,8 +49,8 @@ streams — that is the meta-only case working as intended, not a failure.
 
 ## Build
 
-Requires a sibling checkout of `mosaic-sdk` (a `replace` directive in `go.mod`
-points at `../mosaic-sdk`) until the SDK is published.
+Requires a sibling checkout of `sdk` (a `replace` directive in `go.mod`
+points at `../sdk`) until the SDK is published.
 
 ```
 go build ./...
@@ -69,5 +69,5 @@ is itself published under the MIT License.
 ## License
 
 MIT (see [`LICENSE`](LICENSE)). This module depends only on the Apache-2.0
-[Mosaic SDK](https://github.com/mosaic-media/mosaic-sdk); it may be compiled into
+[Mosaic SDK](https://github.com/mosaic-media/sdk); it may be compiled into
 a Mosaic Platform binary under the Platform's Module Linking Exception.
