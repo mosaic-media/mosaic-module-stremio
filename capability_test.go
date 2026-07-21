@@ -206,11 +206,14 @@ func fakeAddon(mode addonMode) *httptest.Server {
 		resources = []string{"meta"}
 	}
 	manifest := map[string]interface{}{
-		"id":        "org.fake.addon",
-		"name":      "Fake Addon",
-		"version":   "1.0.0",
-		"resources": append(append([]string{}, resources...), "catalog"),
-		"types":     []string{"movie", "series"},
+		"id":            "org.fake.addon",
+		"name":          "Fake Addon",
+		"version":       "1.0.0",
+		"description":   "A fake addon for tests.",
+		"logo":          "http://fake/logo.png",
+		"behaviorHints": map[string]interface{}{"configurable": true},
+		"resources":     append(append([]string{}, resources...), "catalog"),
+		"types":         []string{"movie", "series"},
 		// Two catalogs, both search-capable, so search and browse have something
 		// to hit. A search-capable catalog declares "search" in its extra.
 		"catalogs": []map[string]interface{}{

@@ -78,16 +78,26 @@ func normaliseAddonURL(u string) string {
 
 // Manifest is the subset of a Stremio addon manifest this client reads.
 type Manifest struct {
-	ID        string         `json:"id"`
-	Name      string         `json:"name"`
-	Version   string         `json:"version"`
-	Resources []ResourceDecl `json:"resources"`
-	Types     []string       `json:"types"`
-	Catalogs  []CatalogDecl  `json:"catalogs"`
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	Version     string         `json:"version"`
+	Description string         `json:"description"`
+	Logo        string         `json:"logo"`
+	Resources   []ResourceDecl `json:"resources"`
+	Types       []string       `json:"types"`
+	Catalogs    []CatalogDecl  `json:"catalogs"`
 	// AddonCatalogs are catalogs of *other addons* this addon exposes (the
 	// `addon_catalog` resource) — how a user discovers installable addons without
 	// a manifest URL (ADR 0038).
-	AddonCatalogs []CatalogDecl `json:"addonCatalogs"`
+	AddonCatalogs []CatalogDecl      `json:"addonCatalogs"`
+	BehaviorHints addonBehaviorHints `json:"behaviorHints"`
+}
+
+// addonBehaviorHints is the subset of a manifest's behaviorHints the settings UI
+// reads: whether the addon exposes its own configuration page (ADR 0038).
+type addonBehaviorHints struct {
+	Configurable          bool `json:"configurable"`
+	ConfigurationRequired bool `json:"configurationRequired"`
 }
 
 // CatalogDecl is one entry of a manifest's catalogs array — a collection the
@@ -449,6 +459,39 @@ func (c *Client) Search(ctx context.Context, query string) ([]MetaPreview, error
 type AddonCatalogEntry struct {
 	TransportURL string   `json:"transportUrl"`
 	Manifest     Manifest `json:"manifest"`
+}
+
+// AddonInfo is the display detail for one configured addon (ADR 0038): the name,
+// logo and description from its manifest, whether it is configurable, and the
+// normalised base URL that identifies it. An addon whose manifest cannot be
+// fetched still yields an entry (named by its URL) so a user can remove it.
+type AddonInfo struct {
+	Base         string
+	Name         string
+	Logo         string
+	Description  string
+	Configurable bool
+}
+
+// InstalledAddons returns display detail for each configured addon, in the
+// client's effective (deduped, default-first) order. Manifests are fetched and
+// cached; an unreachable addon is named by its URL rather than dropped, so it
+// stays removable.
+func (c *Client) InstalledAddons(ctx context.Context) []AddonInfo {
+	out := make([]AddonInfo, 0, len(c.addons))
+	for _, a := range c.addons {
+		info := AddonInfo{Base: a.baseURL, Name: a.baseURL}
+		if err := c.ensureManifest(ctx, a); err == nil {
+			if a.manifest.Name != "" {
+				info.Name = a.manifest.Name
+			}
+			info.Logo = a.manifest.Logo
+			info.Description = a.manifest.Description
+			info.Configurable = a.manifest.BehaviorHints.Configurable
+		}
+		out = append(out, info)
+	}
+	return out
 }
 
 // AddonCatalog fetches the union of every configured addon's addon catalogs —

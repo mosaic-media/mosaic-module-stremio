@@ -37,9 +37,19 @@ func TestSettingsUIRendersSections(t *testing.T) {
 	}
 
 	s := string(resp.UI)
-	for _, want := range []string{"SubmitField", "$value", "configureModule", "Add an addon", "Installed addons", server.URL, "Remove"} {
+	// The add form, the installed addon rendered as a card (its manifest name and
+	// logo, a Configure control since it declares configurable, and Remove), and
+	// a Grid layout (ADR 0038 improvements).
+	for _, want := range []string{
+		"SubmitField", "$value", "configureModule", "Add an addon", "Installed addons",
+		"Fake Addon", "http://fake/logo.png", "Configure", "Remove", "Grid", "Browse addons",
+	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("settings UI missing %q", want)
 		}
+	}
+	// The raw manifest URL should no longer be shown as a card label — the name is.
+	if strings.Contains(s, `"text":"`+server.URL) {
+		t.Errorf("settings UI shows the raw addon URL as a label; want the addon name")
 	}
 }
