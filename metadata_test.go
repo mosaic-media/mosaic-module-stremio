@@ -142,3 +142,22 @@ func TestMergeVideosMergesEpisodesByNumber(t *testing.T) {
 		t.Errorf("episode 1 did not gather fields from both sources: %+v", got[0])
 	}
 }
+
+// TestUnionCreditsFillsAPersonRatherThanDuplicating — two sources listing the
+// same actor must produce one entry that gathers what each had, not two entries
+// with half the information each.
+func TestUnionCreditsFillsAPersonRatherThanDuplicating(t *testing.T) {
+	got := unionCredits(
+		[]Credit{{Name: "Ryan Gosling"}},
+		[]Credit{
+			{Name: "ryan gosling", Character: "Ryland Grace", Photo: "https://img/rg.jpg"},
+			{Name: "Sandra Hüller", Character: "Eva Stratt"},
+		},
+	)
+	if len(got) != 2 {
+		t.Fatalf("got %d credits, want 2 — the shared person must merge", len(got))
+	}
+	if got[0].Character == "" || got[0].Photo == "" {
+		t.Errorf("the existing person did not gain the character or photo: %+v", got[0])
+	}
+}

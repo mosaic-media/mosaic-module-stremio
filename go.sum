@@ -4,6 +4,8 @@ github.com/mosaic-media/sdk v0.8.0 h1:naZ+9I0n4N7252mH6vymy48iWktTRVnesbb4wfjU87
 github.com/mosaic-media/sdk v0.8.0/go.mod h1:E+B7qxfjCSmymJPnBHN2/j38aM9+qAJbdaTVZBHHuyQ=
 github.com/mosaic-media/sdk v0.10.0 h1:N/CElYos1fVNSAIJ0TqfKrE0NjZgqNzH2zFGjHy/I7I=
 github.com/mosaic-media/sdk v0.10.0/go.mod h1:E+B7qxfjCSmymJPnBHN2/j38aM9+qAJbdaTVZBHHuyQ=
+github.com/mosaic-media/sdk v0.11.0 h1:uLDFgH5HofY3q3BhP8+3wkq+4Su1C0HqCYsg5DiCc7Q=
+github.com/mosaic-media/sdk v0.11.0/go.mod h1:E+B7qxfjCSmymJPnBHN2/j38aM9+qAJbdaTVZBHHuyQ=
 github.com/mosaic-media/sdui v0.6.1 h1:EFxbd8b1HmAl0mllEJ8GCStkfA6RSTaEIZilCUugiRM=
 github.com/mosaic-media/sdui v0.6.1/go.mod h1:U2jxF+nZzupVfSU/ysMXOX1XZ1COhP89UoYA5SE8FrM=
 github.com/santhosh-tekuri/jsonschema/v5 v5.3.1 h1:lZUw3E0/J3roVtGQ+SCrUrg3ON6NgVqpn3+iol9aGu4=

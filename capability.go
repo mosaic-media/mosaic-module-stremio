@@ -18,7 +18,7 @@ const (
 	// caller names to invoke it.
 	CapabilityID = "stremio"
 	// moduleVersion is this module's own version, reported in its Manifest.
-	moduleVersion = "0.14.0"
+	moduleVersion = "0.15.0"
 	// providerScheme is the external-id scheme and source-binding provider the
 	// module keys content under: Stremio content is identified by IMDB id.
 	providerScheme = "imdb"
@@ -375,31 +375,35 @@ func castOf(meta Meta) []v1.Person {
 	const maxCast = 18
 	seen := make(map[string]bool)
 	out := make([]v1.Person, 0, maxCast)
-	add := func(name string) {
-		name = strings.TrimSpace(name)
-		if name == "" || seen[name] || len(out) >= maxCast {
+	add := func(p v1.Person) {
+		p.Name = strings.TrimSpace(p.Name)
+		if p.Name == "" || seen[p.Name] || len(out) >= maxCast {
 			return
 		}
-		seen[name] = true
-		out = append(out, v1.Person{Name: name})
+		seen[p.Name] = true
+		out = append(out, p)
 	}
+
+	// The rich block first: it is the only source carrying a character name and
+	// a photograph, and a cast rail with faces is a different thing from a list
+	// of names. `links` can express neither, which is why an addon with better
+	// data puts it elsewhere.
+	for _, c := range meta.AppExtras.Cast {
+		add(v1.Person{Name: c.Name, Role: c.Character, Photo: c.Photo})
+	}
+
+	// Then the standard shapes, which fill in for a source that has no rich
+	// block at all. A name with no face still belongs on the screen.
 	for _, l := range meta.Links {
 		if strings.EqualFold(l.Category, "Cast") || strings.EqualFold(l.Category, "actor") {
-			add(l.Name)
+			add(v1.Person{Name: l.Name})
 		}
 	}
 	for _, name := range meta.Cast {
-		add(name)
-	}
-	if len(out) == 0 {
-		return nil
+		add(v1.Person{Name: name})
 	}
 	return out
 }
-
-// episodesOf projects a series' flat video list into the episode preview (ADR
-// 0034), ordered by season then episode. It carries the synopsis, still and air
-// date the detail shows; the materialised tree remains Import's concern.
 func episodesOf(videos []Video) []v1.EpisodePreview {
 	if len(videos) == 0 {
 		return nil

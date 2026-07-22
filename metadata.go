@@ -127,6 +127,12 @@ func (c *Client) MetaMerged(ctx context.Context, typ, id string) (Meta, MetaProv
 		out.Cast = unionStrings(out.Cast, s.meta.Cast)
 		out.Links = unionLinks(out.Links, s.meta.Links)
 		out.Videos = mergeVideos(out.Videos, s.meta.Videos)
+		// Credits union like any other supplementary list. They are also the one
+		// place a photo can come from, so a source that has them contributes
+		// even when a higher-priority source supplied the identity.
+		out.AppExtras.Cast = unionCredits(out.AppExtras.Cast, s.meta.AppExtras.Cast)
+		out.AppExtras.Directors = unionCredits(out.AppExtras.Directors, s.meta.AppExtras.Directors)
+		out.AppExtras.Writers = unionCredits(out.AppExtras.Writers, s.meta.AppExtras.Writers)
 		prov.Contributors = append(prov.Contributors, s.addon)
 	}
 
@@ -222,4 +228,27 @@ func coalesce(dst *string, src string) {
 	if strings.TrimSpace(*dst) == "" {
 		*dst = src
 	}
+}
+
+// unionCredits merges credit lists by person, filling a missing photo or
+// character from a later source rather than duplicating the person.
+func unionCredits(dst, src []Credit) []Credit {
+	index := make(map[string]int, len(dst))
+	for i, c := range dst {
+		index[strings.ToLower(strings.TrimSpace(c.Name))] = i
+	}
+	for _, c := range src {
+		k := strings.ToLower(strings.TrimSpace(c.Name))
+		if k == "" {
+			continue
+		}
+		if i, ok := index[k]; ok {
+			coalesce(&dst[i].Character, c.Character)
+			coalesce(&dst[i].Photo, c.Photo)
+			continue
+		}
+		index[k] = len(dst)
+		dst = append(dst, c)
+	}
+	return dst
 }

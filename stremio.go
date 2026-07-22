@@ -206,6 +206,27 @@ type Meta struct {
 	Cast   []string `json:"cast"`
 	Links  []Link   `json:"links"`
 	Videos []Video  `json:"videos"`
+	// AppExtras is where an addon proxying a real metadata database puts credits
+	// that the base Stremio meta shape has no room for. `links` carries cast as
+	// a name and a search URL — no character, no photo — so an addon with better
+	// data has nowhere to put it and puts it here instead.
+	AppExtras AppExtras `json:"app_extras"`
+}
+
+// AppExtras is the richer credit block some addons attach alongside the
+// standard meta fields.
+type AppExtras struct {
+	Cast      []Credit `json:"cast"`
+	Directors []Credit `json:"directors"`
+	Writers   []Credit `json:"writers"`
+}
+
+// Credit is one person with the two things `links` cannot express: the
+// character they played, and a photograph of them.
+type Credit struct {
+	Name      string `json:"name"`
+	Character string `json:"character"`
+	Photo     string `json:"photo"`
 }
 
 // Link is one entry of a meta's `links` array — the modern Cinemeta shape that
