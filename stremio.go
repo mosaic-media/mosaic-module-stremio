@@ -26,7 +26,15 @@ type Client struct {
 // resolvedAddon pairs an addon's base URL with its manifest, fetched lazily on
 // first use and cached for the life of the client.
 type resolvedAddon struct {
-	baseURL  string
+	baseURL string
+	// order is the addon's position in the user's configured list, and it is the
+	// priority rule: the first addon a user lists is the one whose answer wins a
+	// conflict. Stremio settles the same question the same way — its community
+	// guidance to put metadata addons first only makes sense because ordering is
+	// the policy — and it is a better answer than any heuristic the module could
+	// apply to a manifest, because it is the user's actual preference rather
+	// than a guess about it.
+	order    int
 	manifest Manifest
 	fetched  bool
 }
@@ -46,7 +54,7 @@ func NewClient(httpClient *http.Client, addonURLs ...string) *Client {
 		if base == "" {
 			continue
 		}
-		addons = append(addons, &resolvedAddon{baseURL: base})
+		addons = append(addons, &resolvedAddon{baseURL: base, order: len(addons)})
 	}
 	return &Client{http: httpClient, addons: addons}
 }

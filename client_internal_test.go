@@ -57,14 +57,25 @@ func TestDefaultAddonBundled(t *testing.T) {
 		t.Fatalf("default addons = %v, want just Cinemeta %q", got, cinemeta)
 	}
 
-	// A user addon adds to the default, deduped, default first.
+	// A user addon adds to the default, deduped, and the *user's* comes first.
+	//
+	// Order is the priority rule now: the first addon a user lists is the one
+	// whose metadata wins a conflict. The bundled default sits last, because a
+	// default nobody chose has no business outranking one somebody did — ADR
+	// 0035 asked for Cinemeta to be present, not to be first. It used to be
+	// prepended, and the consequence was that it won every metadata field while
+	// the addon a user had deliberately installed was never even consulted.
 	c, err = cap.clientFrom([]byte(`{"addons":["https://torrentio.strem.fun/manifest.json","https://v3-cinemeta.strem.io/manifest.json"]}`))
 	if err != nil {
 		t.Fatalf("clientFrom(user addons): %v", err)
 	}
 	got := base(c.addons)
-	if len(got) != 2 || got[0] != cinemeta || got[1] != "https://torrentio.strem.fun" {
-		t.Fatalf("merged addons = %v, want [cinemeta, torrentio] deduped", got)
+	if len(got) != 2 || got[0] != "https://torrentio.strem.fun" || got[1] != cinemeta {
+		t.Fatalf("merged addons = %v, want [torrentio, cinemeta] — user first, default last", got)
+	}
+	// The configured position is what carries the priority downstream.
+	if c.addons[0].order != 0 || c.addons[1].order != 1 {
+		t.Errorf("addon order not recorded: %d, %d", c.addons[0].order, c.addons[1].order)
 	}
 
 	// Opt out of the default with a user addon → only the user addon.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -17,7 +18,7 @@ const (
 	// caller names to invoke it.
 	CapabilityID = "stremio"
 	// moduleVersion is this module's own version, reported in its Manifest.
-	moduleVersion = "0.13.0"
+	moduleVersion = "0.14.0"
 	// providerScheme is the external-id scheme and source-binding provider the
 	// module keys content under: Stremio content is identified by IMDB id.
 	providerScheme = "imdb"
@@ -109,11 +110,15 @@ func (c *Capability) clientFrom(settings []byte) (*Client, error) {
 		seen[base] = true
 		addons = append(addons, u)
 	}
-	if !disableDefaults {
-		add(defaultAddon)
-	}
+	// The user's own addons first, the bundled default last. Order is the
+	// priority rule (metadataPriority), and a default nobody chose has no
+	// business outranking one somebody did — it is a floor, not a first voice.
+	// ADR 0035 asked for Cinemeta to be *present*, which this still honours.
 	for _, u := range userAddons {
 		add(u)
+	}
+	if !disableDefaults {
+		add(defaultAddon)
 	}
 	if len(addons) == 0 {
 		return nil, fmt.Errorf(`no Stremio addons configured; add one with configureModule (settings {"addons":["<manifest-url>"]}) or re-enable the bundled Cinemeta addon`)
@@ -149,7 +154,7 @@ func (c *Capability) Import(ctx context.Context, svc v1.ContentService, req v1.I
 		return v1.ImportResult{}, fmt.Errorf("ref needs a native type and id, got type=%q id=%q", typ, id)
 	}
 
-	meta, ok, err := client.MetaMerged(ctx, typ, id)
+	meta, _, ok, err := client.MetaMerged(ctx, typ, id)
 	if err != nil {
 		return v1.ImportResult{}, fmt.Errorf("fetch metadata: %w", err)
 	}
@@ -333,13 +338,19 @@ func (c *Capability) Metadata(ctx context.Context, req v1.MetadataRequest) (v1.C
 	if err != nil {
 		return v1.ContentMetadata{}, err
 	}
-	meta, ok, err := client.MetaMerged(ctx, req.Ref.NativeType, req.Ref.NativeID)
+	meta, prov, ok, err := client.MetaMerged(ctx, req.Ref.NativeType, req.Ref.NativeID)
 	if err != nil {
 		return v1.ContentMetadata{}, fmt.Errorf("fetch metadata: %w", err)
 	}
 	if !ok {
 		return v1.ContentMetadata{}, fmt.Errorf("no configured addon served metadata for %s/%s", req.Ref.NativeType, req.Ref.NativeID)
 	}
+	// Which source supplied what, logged once per lookup. A record assembled
+	// from several addons is the kind of thing that is hard to explain after the
+	// fact, and "the artwork came from Cinemeta because your first addon had
+	// none" is a far better answer than a shrug.
+	log.Printf("stremio: meta %s/%s — identity=%q artwork=%q contributors=%v",
+		req.Ref.NativeType, req.Ref.NativeID, prov.Identity, prov.Artwork, prov.Contributors)
 	return v1.ContentMetadata{
 		Ref:      req.Ref,
 		Title:    meta.Name,

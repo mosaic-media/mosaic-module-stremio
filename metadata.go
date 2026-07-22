@@ -9,67 +9,48 @@ import (
 
 // Unioning metadata across addons.
 //
-// A Stremio setup is several addons, and more than one of them answers `meta`.
-// This used to take the first that replied, which made the answer an accident of
-// list order — and since the bundled Cinemeta was prepended, it always won and
-// every richer source a user had deliberately installed was never even asked.
+// The module used to take the first addon that answered, which made the result
+// an accident of list order — and with the bundled Cinemeta prepended, it always
+// won and every richer source a user had deliberately installed was never even
+// asked. Every configured addon is now queried concurrently.
 //
-// The fix is to ask all of them and merge, which is what a union means for a
-// resource that is a *record* rather than a list:
+// **How the answers combine is a tiered rule, not a flat merge**, and the tiers
+// are drawn around what has to stay internally consistent:
 //
-//   - **Scalars** (title, overview, poster, logo, rating, runtime) coalesce:
-//     the first non-empty value in priority order. That is where the gap-filling
-//     lives — a source with no clearlogo no longer costs you the one another
-//     source had.
-//   - **Lists** (cast, genres) genuinely union, deduped.
-//   - **Episodes** merge by season/episode, then coalesce field by field, so a
-//     per-episode still from one source and a synopsis from another end up on
-//     the same episode.
+//   - **Identity** — title, year, overview, runtime, rating — is never blended.
+//     It comes whole from the highest-priority source that answered. A record
+//     assembled from two sources' prose reads as wrong in a way a gap does not,
+//     and this is the behaviour Stremio itself has.
+//   - **Artwork** travels as a *set*. Poster, backdrop and logo come from the
+//     first source that supplies any of them, so a regional poster never ends up
+//     beside another source's English logo — while a source carrying no artwork
+//     at all still costs you none.
+//   - **Supplementary lists** — cast, genres, episodes — union freely. They are
+//     additive by nature: more cast is strictly better, and two sources
+//     describing one episode enrich it rather than conflict. This is where the
+//     actual enrichment lives.
 //
-// Everything is fetched concurrently. Sequentially this would be one round trip
-// per addon on the detail-screen path, and detail views are the most latency-
-// sensitive thing in the product; concurrently it costs the slowest addon rather
-// than the sum of them.
+// The risk this guards against is narrower than it first looks: every addon is
+// asked about the same IMDB id, so they describe the same title. What differs is
+// edition, region and language variants — which is exactly what the artwork tier
+// keeps from mixing.
 
-// metadataPriority ranks an addon as a metadata source. Lower wins a conflict.
-//
-// TMDB first, by the owner's call and for a defensible reason: it is a
-// maintained, broadly-populated database, where an addon aggregating scrapers is
-// primarily a *stream* source that happens to carry some metadata. Cinemeta
-// sits last — ADR 0035 bundles it so a fresh install has metadata at all, and
-// that argues for it being the floor rather than the first voice. A user who
-// installed something else chose it deliberately.
-//
-// This is a default, not a policy: the intent is for a user to order their own
-// sources in settings, and this is the shape that preference will slot into.
-func metadataPriority(m Manifest, baseURL string) int {
-	hay := strings.ToLower(m.ID + " " + m.Name + " " + baseURL)
-	switch {
-	case strings.Contains(hay, "tmdb"):
-		return 0
-	case strings.Contains(hay, "cinemeta"):
-		return 2
-	default:
-		return 1
-	}
-}
-
-// addonMeta pairs one addon's answer with its rank, so the merge can order
-// sources without re-deriving the ranking.
-type addonMeta struct {
-	priority int
+// metaSource pairs one addon's answer with its configured rank.
+type metaSource struct {
+	order    int
+	addon    string
 	meta     Meta
+	hasArt   bool
+	hasIdent bool
 }
 
-// MetaMerged asks every addon that serves `meta` and merges their answers.
-//
-// An addon that fails or has nothing is skipped rather than failing the whole
-// read: metadata assembled from three sources out of four is a better detail
-// screen than an error, and one unreachable addon must not blank a page.
-func (c *Client) MetaMerged(ctx context.Context, typ, id string) (Meta, bool, error) {
+// MetaMerged asks every addon that serves `meta` and combines their answers by
+// the tiered rule above. It also reports which addon supplied each tier, so an
+// odd-looking detail screen is an answerable question rather than a guess.
+func (c *Client) MetaMerged(ctx context.Context, typ, id string) (Meta, MetaProvenance, bool, error) {
 	var (
 		mu      sync.Mutex
-		results []addonMeta
+		sources []metaSource
 		wg      sync.WaitGroup
 	)
 
@@ -91,60 +72,89 @@ func (c *Client) MetaMerged(ctx context.Context, typ, id string) (Meta, bool, er
 			if err := c.getJSON(ctx, a.baseURL+"/meta/"+typ+"/"+id+".json", &resp); err != nil {
 				return
 			}
-			if resp.Meta.ID == "" && resp.Meta.Name == "" {
+			m := resp.Meta
+			if m.ID == "" && m.Name == "" {
 				return
 			}
 			mu.Lock()
-			results = append(results, addonMeta{priority: metadataPriority(a.manifest, a.baseURL), meta: resp.Meta})
+			sources = append(sources, metaSource{
+				order: a.order, addon: addonLabel(a),
+				meta:     m,
+				hasArt:   m.Poster != "" || m.Background != "" || m.Logo != "",
+				hasIdent: strings.TrimSpace(m.Name) != "",
+			})
 			mu.Unlock()
 		}(a)
 	}
 	wg.Wait()
 
-	if len(results) == 0 {
-		return Meta{}, false, nil
+	if len(sources) == 0 {
+		return Meta{}, MetaProvenance{}, false, nil
 	}
-	// Stable sort so two sources of equal rank keep their configured order,
-	// which is the only tie-break a user has expressed.
-	sort.SliceStable(results, func(i, j int) bool { return results[i].priority < results[j].priority })
+	sort.SliceStable(sources, func(i, j int) bool { return sources[i].order < sources[j].order })
 
-	merged := results[0].meta
-	for _, r := range results[1:] {
-		mergeMeta(&merged, r.meta)
+	var (
+		out  Meta
+		prov MetaProvenance
+	)
+
+	// Identity: whole, from the first source that has one. Not field by field —
+	// a title from one source and an overview from another is the blend this
+	// tier exists to prevent.
+	for _, s := range sources {
+		if s.hasIdent {
+			out.ID, out.Type, out.Name = s.meta.ID, s.meta.Type, s.meta.Name
+			out.Description, out.ReleaseInfo = s.meta.Description, s.meta.ReleaseInfo
+			out.Runtime, out.ImdbRating = s.meta.Runtime, s.meta.ImdbRating
+			prov.Identity = s.addon
+			break
+		}
 	}
-	return merged, true, nil
+
+	// Artwork: as a set, from the first source that has any of it.
+	for _, s := range sources {
+		if s.hasArt {
+			out.Poster, out.Background, out.Logo = s.meta.Poster, s.meta.Background, s.meta.Logo
+			prov.Artwork = s.addon
+			break
+		}
+	}
+
+	// Supplementary lists: union across everything, in priority order so the
+	// preferred source's entries lead.
+	for _, s := range sources {
+		out.Genres = unionStrings(out.Genres, s.meta.Genres)
+		out.Cast = unionStrings(out.Cast, s.meta.Cast)
+		out.Links = unionLinks(out.Links, s.meta.Links)
+		out.Videos = mergeVideos(out.Videos, s.meta.Videos)
+		prov.Contributors = append(prov.Contributors, s.addon)
+	}
+
+	return out, prov, true, nil
 }
 
-// mergeMeta folds src into dst without overwriting anything dst already has.
+// MetaProvenance records which addon supplied each tier of a merged record.
 //
-// "Without overwriting" is the whole rule, and it is what makes priority order
-// meaningful: the highest-ranked source that had an opinion keeps it, and every
-// later source can only fill blanks.
-func mergeMeta(dst *Meta, src Meta) {
-	coalesce(&dst.ID, src.ID)
-	coalesce(&dst.Type, src.Type)
-	coalesce(&dst.Name, src.Name)
-	coalesce(&dst.Poster, src.Poster)
-	coalesce(&dst.Background, src.Background)
-	coalesce(&dst.Logo, src.Logo)
-	coalesce(&dst.Description, src.Description)
-	coalesce(&dst.ReleaseInfo, src.ReleaseInfo)
-	coalesce(&dst.Runtime, src.Runtime)
-	coalesce(&dst.ImdbRating, src.ImdbRating)
-
-	dst.Genres = unionStrings(dst.Genres, src.Genres)
-	// Cast appears both as a legacy top-level name list and inside Links; both
-	// are read downstream, so both have to survive the merge.
-	dst.Cast = unionStrings(dst.Cast, src.Cast)
-	dst.Links = unionLinks(dst.Links, src.Links)
-	dst.Videos = mergeVideos(dst.Videos, src.Videos)
+// It costs almost nothing and turns "why does this look odd" into something
+// answerable. Metadata assembled from several sources is exactly the kind of
+// thing that is hard to debug after the fact without it.
+type MetaProvenance struct {
+	Identity     string
+	Artwork      string
+	Contributors []string
 }
 
-// coalesce fills a string only when it is empty.
-func coalesce(dst *string, src string) {
-	if strings.TrimSpace(*dst) == "" {
-		*dst = src
+// addonLabel names an addon for provenance — its manifest name where it has
+// one, otherwise its host, which is enough to tell two sources apart.
+func addonLabel(a *resolvedAddon) string {
+	if a.manifest.Name != "" {
+		return a.manifest.Name
 	}
+	base := strings.TrimPrefix(strings.TrimPrefix(a.baseURL, "https://"), "http://")
+	if i := strings.IndexByte(base, '/'); i > 0 {
+		base = base[:i]
+	}
+	return base
 }
 
 // unionStrings appends what is new, case-insensitively, preserving order.
@@ -167,9 +177,7 @@ func unionStrings(dst, src []string) []string {
 // unionLinks merges the links array, which is where cast and crew live. Deduped
 // on category plus name, so the same actor from two sources appears once.
 func unionLinks(dst, src []Link) []Link {
-	key := func(l Link) string {
-		return strings.ToLower(l.Category + "\x00" + l.Name)
-	}
+	key := func(l Link) string { return strings.ToLower(l.Category + "|" + l.Name) }
 	seen := make(map[string]bool, len(dst))
 	for _, l := range dst {
 		seen[key(l)] = true
@@ -206,4 +214,12 @@ func mergeVideos(dst, src []Video) []Video {
 		dst = append(dst, v)
 	}
 	return dst
+}
+
+// coalesce fills a string only when it is empty. Used within an episode, where
+// the fields are independent facts about one thing rather than a coherent set.
+func coalesce(dst *string, src string) {
+	if strings.TrimSpace(*dst) == "" {
+		*dst = src
+	}
 }

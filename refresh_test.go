@@ -123,64 +123,6 @@ func TestSelectCandidatesPreservesSourceOrderWithinAQuality(t *testing.T) {
 	}
 }
 
-// TestMetadataPriorityPrefersTMDBAndDemotesCinemeta pins the ordering that
-// decides whose metadata wins a conflict. Cinemeta used to be *prepended* and
-// win every field, so a richer source a user installed deliberately was never
-// consulted — the exact inversion of what a user asking for it wants.
-func TestMetadataPriorityPrefersTMDBAndDemotesCinemeta(t *testing.T) {
-	tmdb := metadataPriority(Manifest{ID: "tmdb-addon", Name: "TMDB"}, "https://tmdb.example")
-	other := metadataPriority(Manifest{ID: "com.aiostreams.x", Name: "AIO"}, "https://aio.example")
-	cinemeta := metadataPriority(Manifest{ID: "com.linvo.cinemeta", Name: "Cinemeta"}, "https://v3-cinemeta.strem.io")
-
-	if !(tmdb < other && other < cinemeta) {
-		t.Errorf("priority order wrong: tmdb=%d other=%d cinemeta=%d", tmdb, other, cinemeta)
-	}
-}
-
-// TestMergeMetaFillsGapsWithoutOverwriting is the coalesce rule. The
-// higher-ranked source keeps every opinion it has; a later one may only fill
-// blanks, which is what makes the priority order mean anything.
-func TestMergeMetaFillsGapsWithoutOverwriting(t *testing.T) {
-	best := Meta{Name: "Thor: Ragnarok", Description: "The good synopsis"}
-	other := Meta{
-		Name: "Thor Ragnarok (2017)", Description: "A worse synopsis",
-		Logo: "https://img/logo.png", Runtime: "130 min",
-		Genres: []string{"Action"}, Cast: []string{"Chris Hemsworth"},
-	}
-
-	mergeMeta(&best, other)
-
-	if best.Name != "Thor: Ragnarok" || best.Description != "The good synopsis" {
-		t.Error("a lower-priority source overwrote a field the higher one had")
-	}
-	if best.Logo == "" || best.Runtime == "" {
-		t.Error("gaps were not filled — that is the whole point of merging")
-	}
-	if len(best.Genres) != 1 || len(best.Cast) != 1 {
-		t.Errorf("list fields did not union: genres=%v cast=%v", best.Genres, best.Cast)
-	}
-}
-
-// TestMergeVideosMergesEpisodesByNumber — two sources describing the same
-// episode must enrich it rather than produce two of it. Appending would give a
-// season selector with every episode listed twice.
-func TestMergeVideosMergesEpisodesByNumber(t *testing.T) {
-	got := mergeVideos(
-		[]Video{{Season: 1, Episode: 1, Name: "Pilot"}},
-		[]Video{
-			{Season: 1, Episode: 1, Overview: "The synopsis", Thumbnail: "https://img/still.jpg"},
-			{Season: 1, Episode: 2, Name: "Second"},
-		},
-	)
-
-	if len(got) != 2 {
-		t.Fatalf("got %d episodes, want 2 — the shared episode must merge, not duplicate", len(got))
-	}
-	if got[0].Name != "Pilot" || got[0].Overview == "" || got[0].Thumbnail == "" {
-		t.Errorf("episode 1 did not gather fields from both sources: %+v", got[0])
-	}
-}
-
 func TestDedupeSubtitlesCollapsesRepeatedTracks(t *testing.T) {
 	got := dedupeSubtitles([]Subtitle{
 		{Lang: "eng", URL: "https://s/1.srt"},
