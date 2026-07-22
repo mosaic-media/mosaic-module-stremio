@@ -313,6 +313,39 @@ func (c *Client) Meta(ctx context.Context, typ, id string) (Meta, bool, error) {
 // serves the stream resource for the type. Stremio ranks streams best-first,
 // so the first entry is taken. It returns ok=false, no error, when no
 // configured addon serves a stream — the metadata-only case.
+// Streams fetches every stream a configured addon offers for a content id.
+//
+// Import stores all of them (ADR 0049): a candidate never expires, so keeping
+// the set costs nothing to keep correct, and it is what lets a consumer choose a
+// release the calling client can actually play instead of being handed whatever
+// happened to be first. Only the resolved URL is perishable, and that is cached
+// separately.
+func (c *Client) Streams(ctx context.Context, typ, id string) ([]Stream, error) {
+	var out []Stream
+	for _, a := range c.addons {
+		if err := c.ensureManifest(ctx, a); err != nil {
+			continue
+		}
+		if !supports(a.manifest, "stream", typ, id) {
+			continue
+		}
+		var resp struct {
+			Streams []Stream `json:"streams"`
+		}
+		if err := c.getJSON(ctx, a.baseURL+"/stream/"+typ+"/"+id+".json", &resp); err != nil {
+			// One unwell addon must not blank the whole candidate list when
+			// another is answering.
+			continue
+		}
+		for _, s := range resp.Streams {
+			if s.Ref() != "" {
+				out = append(out, s)
+			}
+		}
+	}
+	return out, nil
+}
+
 func (c *Client) Stream(ctx context.Context, typ, id string) (Stream, bool, error) {
 	for _, a := range c.addons {
 		if err := c.ensureManifest(ctx, a); err != nil {
@@ -599,10 +632,32 @@ type streamMeta struct {
 	quality   string
 	sizeBytes int64
 	seeders   int
+	// container, videoCodec and audioCodec are what a consumer needs to know
+	// whether a client can play this at all (ADR 0048). They are parsed here, at
+	// the boundary, rather than left for something downstream to infer from a
+	// URL — which is exactly the leak ADR 0051 names: the container hint has
+	// already been found hiding in a query parameter, where no consumer should
+	// have been looking for it.
+	//
+	// Best-effort like the rest: this makes a candidate list *rankable*. What a
+	// release actually contains is settled by probing the bytes before it plays
+	// (ADR 0050), because release text lies and this cannot see inside a file.
+	container  string
+	videoCodec string
+	audioCodec string
+	width      int
+	height     int
 }
 
 var (
 	qualityRe = regexp.MustCompile(`(?i)\b(2160p|4k|1080p|720p|480p|360p)\b`)
+	// A container is read from a filename extension where there is one; release
+	// text names containers far less reliably than it names codecs.
+	containerRe = regexp.MustCompile(`(?i)\.(mkv|mp4|m4v|avi|ts|m2ts|webm|mov|wmv|flv)\b`)
+	// Codec spellings vary wildly between release groups. Every alternative
+	// here has been seen in the wild rather than derived from a standard.
+	videoCodecRe = regexp.MustCompile(`(?i)\b(x265|h\.?265|hevc|x264|h\.?264|avc|av1|vp9|xvid|divx)\b`)
+	audioCodecRe = regexp.MustCompile(`(?i)\b(e-?ac-?3|eac3|ddp\+?|dd\+|atmos|true-?hd|dts-?hd|dts|ac-?3|aac|opus|flac|mp3)\b`)
 	// Torrentio and kin mark seeders with a person glyph before the count.
 	seedersRe = regexp.MustCompile(`👤\s*(\d+)`)
 	sizeRe    = regexp.MustCompile(`(?i)([\d.]+)\s*(TB|GB|MB)`)
@@ -623,7 +678,75 @@ func parseStreamMeta(s Stream) streamMeta {
 	if sd := seedersRe.FindStringSubmatch(text); sd != nil {
 		m.seeders, _ = strconv.Atoi(sd[1])
 	}
+	// The filename is the most trustworthy place a container appears; the free
+	// text is a fallback for addons that give no filename at all.
+	if c := containerRe.FindStringSubmatch(s.BehaviorHints.Filename); c != nil {
+		m.container = strings.ToLower(c[1])
+	} else if c := containerRe.FindStringSubmatch(text); c != nil {
+		m.container = strings.ToLower(c[1])
+	}
+	if v := videoCodecRe.FindString(text); v != "" {
+		m.videoCodec = normaliseVideoCodec(v)
+	}
+	if a := audioCodecRe.FindString(text); a != "" {
+		m.audioCodec = normaliseAudioCodec(a)
+	}
+	m.width, m.height = dimensionsFor(m.quality)
 	return m
+}
+
+// normaliseVideoCodec collapses the many spellings of a codec onto the name
+// ffprobe uses, so a parsed guess and a probed fact are comparable.
+func normaliseVideoCodec(v string) string {
+	switch strings.ToLower(strings.ReplaceAll(v, "-", "")) {
+	case "x265", "h265", "hevc":
+		return "hevc"
+	case "x264", "h264", "avc":
+		return "h264"
+	case "av1":
+		return "av1"
+	case "vp9":
+		return "vp9"
+	case "xvid", "divx":
+		return "mpeg4"
+	}
+	return strings.ToLower(v)
+}
+
+// normaliseAudioCodec does the same for audio. The distinctions that matter are
+// the ones a browser cannot decode — E-AC3, AC3, DTS, TrueHD — so those collapse
+// onto their ffprobe names and everything else is passed through lowercased.
+func normaliseAudioCodec(a string) string {
+	l := strings.ToLower(strings.ReplaceAll(a, "-", ""))
+	switch {
+	case strings.HasPrefix(l, "eac3"), strings.HasPrefix(l, "ddp"), l == "dd+", l == "atmos":
+		return "eac3"
+	case strings.HasPrefix(l, "truehd"):
+		return "truehd"
+	case strings.HasPrefix(l, "dtshd"):
+		return "dts"
+	case l == "dts":
+		return "dts"
+	case l == "ac3", l == "dd5.1":
+		return "ac3"
+	}
+	return l
+}
+
+// dimensionsFor turns a quality label into nominal dimensions. It is a display
+// and ranking aid, not a measurement — the real numbers come from a probe.
+func dimensionsFor(quality string) (int, int) {
+	switch quality {
+	case "2160p":
+		return 3840, 2160
+	case "1080p":
+		return 1920, 1080
+	case "720p":
+		return 1280, 720
+	case "480p":
+		return 854, 480
+	}
+	return 0, 0
 }
 
 // normaliseQuality collapses "4K" onto the resolution label the rest use.

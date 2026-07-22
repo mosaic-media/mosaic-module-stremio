@@ -252,24 +252,56 @@ func (c *Capability) importSeries(ctx context.Context, client *Client, svc v1.Co
 	return nil
 }
 
-// attachStream fetches a stream for the content id and, if a stream addon
-// served one, attaches it as a RemoteLocation Part. No stream is not an error:
-// a meta-only import creates the tree without Parts.
+// attachStream fetches every stream a configured addon offers for the content id
+// and attaches each as a RemoteLocation Part. No stream is not an error: a
+// meta-only import creates the tree without Parts.
+//
+// All of them, not the first (ADR 0049). A source returns dozens of releases for
+// one film, differing in container, codec, language and size, and which one a
+// viewer can actually play depends on the client asking — a fact not available
+// at import time and different for two clients of the same install. Storing one
+// bakes in an answer to a question that had not been asked. Candidates never
+// expire, so keeping the whole set costs nothing to keep correct; only the
+// resolved URL is perishable, and that is cached elsewhere.
+//
+// Each carries the release detail parsed at this boundary (ADR 0051), so a
+// consumer ranks on typed fields rather than re-deriving them from a URL.
 func (c *Capability) attachStream(ctx context.Context, client *Client, svc v1.ContentService, caller v1.Caller, itemID v1.NodeID, typ, id string, result *v1.ImportResult) error {
-	stream, ok, err := client.Stream(ctx, typ, id)
+	streams, err := client.Streams(ctx, typ, id)
 	if err != nil {
-		return fmt.Errorf("fetch stream for %s: %w", id, err)
+		return fmt.Errorf("fetch streams for %s: %w", id, err)
 	}
-	if !ok {
-		return nil
+	if len(streams) > maxCandidates {
+		// A bounded set, because an aggregator can return well over a hundred
+		// and the tail is duplicates and unusable releases. The source has
+		// already ranked them, so the head is the part worth keeping — and the
+		// cap is logged in the sense that it is stated here rather than being a
+		// silent truncation nobody can see (ADR 0049).
+		streams = streams[:maxCandidates]
 	}
-	if _, err := svc.AttachContentPart(ctx, v1.AttachContentPartCommand{
-		Caller: caller, NodeID: itemID, Role: v1.PartEdition,
-		Location: v1.MediaLocation{Scheme: v1.RemoteLocation, Provider: streamProvider, Ref: stream.Ref()},
-	}); err != nil {
-		return fmt.Errorf("attach stream part for %s: %w", id, err)
+	for i, stream := range streams {
+		meta := parseStreamMeta(stream)
+		if _, err := svc.AttachContentPart(ctx, v1.AttachContentPartCommand{
+			Caller: caller, NodeID: itemID, Role: v1.PartEdition,
+			// The release name is the edition label: it is what a source picker
+			// shows a user choosing between two candidates by hand.
+			EditionLabel: releaseLabel(stream),
+			// NaturalOrder preserves the source's own ranking, so a consumer
+			// that expresses no preference still gets the order the addon
+			// intended rather than whatever the database returns.
+			NaturalOrder: float64(i),
+			Location:     v1.MediaLocation{Scheme: v1.RemoteLocation, Provider: streamProvider, Ref: stream.Ref()},
+			Container:    meta.container,
+			VideoCodec:   meta.videoCodec,
+			AudioCodec:   meta.audioCodec,
+			Width:        meta.width,
+			Height:       meta.height,
+			SizeBytes:    meta.sizeBytes,
+		}); err != nil {
+			return fmt.Errorf("attach stream part for %s: %w", id, err)
+		}
+		result.Parts++
 	}
-	result.Parts++
 	return nil
 }
 
