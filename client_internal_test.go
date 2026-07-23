@@ -34,10 +34,15 @@ func TestNormaliseAddonURL(t *testing.T) {
 	}
 }
 
-// TestDefaultAddonBundled pins that Cinemeta is present from the get-go with no
-// configuration, that user addons add to it deduped, and that the default can be
-// opted out (ADR 0035).
-func TestDefaultAddonBundled(t *testing.T) {
+// TestAddonsAreOnlyWhatTheUserConfigured pins that this module bundles no addon
+// of its own.
+//
+// It used to bundle Cinemeta so a fresh install had metadata (ADR 0035). That
+// guarantee moved to `module-cinemeta`, a core module that cannot be switched
+// off (ADR 0072), and leaving a second Cinemeta here would have shown every
+// title twice in search — the Platform unions search providers without
+// cross-provider dedup.
+func TestAddonsAreOnlyWhatTheUserConfigured(t *testing.T) {
 	cap := New(nil)
 	base := func(addons []*resolvedAddon) []string {
 		out := make([]string, len(addons))
@@ -46,50 +51,45 @@ func TestDefaultAddonBundled(t *testing.T) {
 		}
 		return out
 	}
-	cinemeta := normaliseAddonURL(defaultAddon)
 
-	// No settings → Cinemeta bundled.
-	c, err := cap.clientFrom(nil)
-	if err != nil {
-		t.Fatalf("clientFrom(nil): %v", err)
-	}
-	if got := base(c.addons); len(got) != 1 || got[0] != cinemeta {
-		t.Fatalf("default addons = %v, want just Cinemeta %q", got, cinemeta)
+	// No settings → nothing to source from, and that is an error rather than a
+	// silent empty answer. It is now the state a fresh install is in.
+	if _, err := cap.clientFrom(nil); err == nil {
+		t.Fatal("clientFrom with no settings must error: this module bundles no addon")
 	}
 
-	// A user addon adds to the default, deduped, and the *user's* comes first.
-	//
-	// Order is the priority rule now: the first addon a user lists is the one
-	// whose metadata wins a conflict. The bundled default sits last, because a
-	// default nobody chose has no business outranking one somebody did — ADR
-	// 0035 asked for Cinemeta to be present, not to be first. It used to be
-	// prepended, and the consequence was that it won every metadata field while
-	// the addon a user had deliberately installed was never even consulted.
-	c, err = cap.clientFrom([]byte(`{"addons":["https://torrentio.strem.fun/manifest.json","https://v3-cinemeta.strem.io/manifest.json"]}`))
+	// Configured addons are used in configured order, which is the priority rule
+	// the metadata merge reads: the first addon a user lists wins a conflict.
+	c, err := cap.clientFrom([]byte(`{"addons":["https://torrentio.strem.fun/manifest.json","https://v3-cinemeta.strem.io/manifest.json"]}`))
 	if err != nil {
 		t.Fatalf("clientFrom(user addons): %v", err)
 	}
 	got := base(c.addons)
-	if len(got) != 2 || got[0] != "https://torrentio.strem.fun" || got[1] != cinemeta {
-		t.Fatalf("merged addons = %v, want [torrentio, cinemeta] — user first, default last", got)
+	if len(got) != 2 || got[0] != "https://torrentio.strem.fun" || got[1] != "https://v3-cinemeta.strem.io" {
+		t.Fatalf("addons = %v, want [torrentio, cinemeta] in configured order", got)
 	}
 	// The configured position is what carries the priority downstream.
 	if c.addons[0].order != 0 || c.addons[1].order != 1 {
 		t.Errorf("addon order not recorded: %d, %d", c.addons[0].order, c.addons[1].order)
 	}
 
-	// Opt out of the default with a user addon → only the user addon.
-	c, err = cap.clientFrom([]byte(`{"addons":["https://torrentio.strem.fun/manifest.json"],"disableDefaultAddons":true}`))
+	// The same addon written two ways is one addon.
+	c, err = cap.clientFrom([]byte(`{"addons":["https://torrentio.strem.fun/manifest.json","stremio://torrentio.strem.fun/manifest.json"]}`))
 	if err != nil {
-		t.Fatalf("clientFrom(opt-out): %v", err)
+		t.Fatalf("clientFrom(duplicate): %v", err)
 	}
-	if got := base(c.addons); len(got) != 1 || got[0] != "https://torrentio.strem.fun" {
-		t.Fatalf("opt-out addons = %v, want just torrentio", got)
+	if got := base(c.addons); len(got) != 1 {
+		t.Fatalf("addons = %v, want the duplicate deduped by base URL", got)
 	}
 
-	// Opt out with nothing configured → the only error path left.
-	if _, err = cap.clientFrom([]byte(`{"disableDefaultAddons":true}`)); err == nil {
-		t.Fatal("clientFrom with default disabled and no addons should error")
+	// A settings document written before the default was removed still parses;
+	// the retired key is ignored rather than needing a migration.
+	c, err = cap.clientFrom([]byte(`{"addons":["https://torrentio.strem.fun/manifest.json"],"disableDefaultAddons":true}`))
+	if err != nil {
+		t.Fatalf("clientFrom(legacy document): %v", err)
+	}
+	if got := base(c.addons); len(got) != 1 || got[0] != "https://torrentio.strem.fun" {
+		t.Fatalf("legacy document addons = %v, want just torrentio", got)
 	}
 }
 

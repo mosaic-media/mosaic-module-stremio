@@ -30,6 +30,16 @@ document naming the addons. Either an addon's base URL or the `…/manifest.json
 URL you copy from Stremio works (the `stremio://` install scheme is accepted
 too); they are normalised to the same base.
 
+**This module bundles no addon of its own.** It used to include Cinemeta so that
+a fresh install had metadata; that guarantee now belongs to
+[`module-cinemeta`](https://github.com/mosaic-media/module-cinemeta), a core
+module that cannot be switched off or misconfigured
+([ADR 0072](https://github.com/mosaic-media/architecture/blob/main/docs/adr/0072-the-guaranteed-metadata-provider-needs-no-credential.md)).
+With nothing configured here, this module simply contributes nothing — Mosaic
+still has metadata and search. A settings document written before the change may
+still carry `disableDefaultAddons`; the key is ignored, so nothing needs
+migrating.
+
 ```json
 {
   "addons": [
@@ -42,10 +52,17 @@ too); they are normalised to the same base.
 **Metadata and streams come from different addons.** A metadata addon (e.g.
 Cinemeta) serves the `meta` resource and builds the library — Works, seasons,
 episodes — but no playable Parts. A stream addon (e.g. Torrentio) serves the
-`stream` resource and adds `RemoteLocation` Parts. Configure a metadata addon
-to see a library at all, and add a stream addon as well if you want stream
-references. With only a metadata addon, an import is complete but has no
-streams — that is the meta-only case working as intended, not a failure.
+`stream` resource and adds `RemoteLocation` Parts. With only a metadata addon,
+an import is complete but has no streams — that is the meta-only case working as
+intended, not a failure.
+
+**A stream addon on its own does not yet make a searchable library playable.**
+Torrentio declares no catalog, so it produces no search results; the results come
+from the core metadata module, and an import routes to whichever provider
+produced the ref — so it materialises metadata with no Parts. Configuring a
+metadata addon *here* as well is what makes this module produce refs its own
+stream addons can attach to. Composing one provider's metadata with another's
+streams is an open Platform question, not something this module can answer.
 
 ## Build and test
 

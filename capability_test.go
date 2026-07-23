@@ -157,26 +157,25 @@ func TestImportRejectsEmptyRef(t *testing.T) {
 	}
 }
 
-func TestImportRejectsWhenNoAddonAndDefaultDisabled(t *testing.T) {
+func TestImportRejectsWhenNoAddonConfigured(t *testing.T) {
 	cap := stremio.New(nil)
-	// With the bundled default (Cinemeta) there is always an addon to source
-	// from, so the only "no addon" state left is opting the default out and
-	// configuring nothing — which must still be rejected. (Empty settings would
-	// use Cinemeta over the network; this opt-out path stays hermetic.)
+	// This module bundles no addon of its own (ADR 0072), so "nothing
+	// configured" is the state a fresh install is in and an import in it must be
+	// refused rather than quietly doing nothing. It is also what keeps this test
+	// hermetic: there is no default to reach for over the network.
 	_, err := cap.Import(context.Background(), newFakeContent(), v1.ImportRequest{
 		Caller: v1.CallerFromSession("s-1"), Ref: movieRef("tt1254207"),
-		Settings: []byte(`{"disableDefaultAddons":true}`),
 	})
 	if err == nil {
-		t.Fatal("an import with the default disabled and no addons configured must be rejected")
+		t.Fatal("an import with no addons configured must be rejected")
 	}
 }
 
 // addonSettings builds a module-settings document naming the given addon URLs.
-// It opts out of the bundled default (Cinemeta) so these tests stay hermetic
-// against their fake addon and never reach the network.
+// Nothing else is sourced from — the module bundles no addon — so these tests
+// stay hermetic against their fake addon and never reach the network.
 func addonSettings(urls ...string) []byte {
-	b, _ := json.Marshal(map[string]any{"addons": urls, "disableDefaultAddons": true})
+	b, _ := json.Marshal(map[string]any{"addons": urls})
 	return b
 }
 
@@ -220,6 +219,12 @@ func fakeAddon(mode addonMode) *httptest.Server {
 			{"type": "movie", "id": "top", "name": "Popular Movies", "extra": []map[string]interface{}{{"name": "search"}}},
 			{"type": "series", "id": "top", "name": "Popular Series", "extra": []map[string]interface{}{{"name": "search"}}},
 		},
+		// A directory of installable addons, which is what the settings screen's
+		// browse grid reads (ADR 0038). It is declared here so that surface can be
+		// exercised without reaching Stremio's real directory.
+		"addonCatalogs": []map[string]interface{}{
+			{"type": "all", "id": "official", "name": "Official"},
+		},
 	}
 
 	movieMeta := map[string]interface{}{"id": "tt1254207", "type": "movie", "name": "Blade Runner 2049", "poster": "http://img/br", "releaseInfo": "2017"}
@@ -257,6 +262,17 @@ func fakeAddon(mode addonMode) *httptest.Server {
 					"name":  "Fake",
 					"title": "Movie.Name.2017.1080p.BluRay.x264\n👤 45 💾 2.3 GB ⚙️ Source",
 					"url":   "http://cdn.example/" + strings.TrimSuffix(path[len("/stream/"):], ".json"),
+				},
+			}})
+		case strings.HasPrefix(path, "/addon_catalog/"):
+			writeJSON(w, map[string]interface{}{"addons": []map[string]interface{}{
+				{
+					"transportUrl": "https://installable.example/manifest.json",
+					"manifest": map[string]interface{}{
+						"id": "org.installable", "name": "Installable Addon",
+						"description": "An addon the browse grid can offer.",
+						"resources":   []string{"stream"},
+					},
 				},
 			}})
 		case strings.HasPrefix(path, "/subtitles/"):

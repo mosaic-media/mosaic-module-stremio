@@ -10,9 +10,10 @@ import (
 // Unioning metadata across addons.
 //
 // The module used to take the first addon that answered, which made the result
-// an accident of list order — and with the bundled Cinemeta prepended, it always
-// won and every richer source a user had deliberately installed was never even
-// asked. Every configured addon is now queried concurrently.
+// an accident of list order — and with a bundled Cinemeta prepended (as there
+// was then), it always won and every richer source a user had deliberately
+// installed was never even asked. Every configured addon is now queried
+// concurrently.
 //
 // **How the answers combine is a tiered rule, not a flat merge**, and the tiers
 // are drawn around what has to stay internally consistent:

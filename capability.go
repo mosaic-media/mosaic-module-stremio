@@ -30,11 +30,21 @@ const (
 	// Part. The bytes are resolved later (the future Remote Media module); the
 	// binding only records where the reference came from.
 	streamProvider = "stremio"
-	// defaultAddon is bundled from the get-go so metadata and search work with no
-	// configuration (ADR 0035): Cinemeta is Stremio's reference metadata/catalog
-	// addon. A user's configured addons add to it; a user can opt out with the
-	// disableDefaultAddons setting.
-	defaultAddon = "https://v3-cinemeta.strem.io/manifest.json"
+	// addonCatalogSource is Stremio's official addon directory, used *only* to
+	// populate the browse grid (ADR 0038) — never as a content source.
+	//
+	// Cinemeta used to be bundled here as a metadata default so that metadata and
+	// search worked with no configuration (ADR 0035). It is not any more:
+	// `module-cinemeta` is that guarantee now, as a core module that cannot be
+	// switched off or misconfigured (ADR 0072), and leaving a second Cinemeta in
+	// this module's sourcing list would show every title twice in search.
+	//
+	// What the bundled default *also* quietly provided was the `addon_catalog`
+	// resource, which is the entire reason a user can browse installable addons
+	// rather than having to paste a manifest URL. That is a discovery surface, not
+	// a content source, so it survives the removal — pointed at directly by
+	// browseSection and never merged into the addons the provider roles read.
+	addonCatalogSource = "https://v3-cinemeta.strem.io/manifest.json"
 )
 
 // moduleVersion is resolved once from the build graph rather than maintained by
@@ -57,39 +67,44 @@ var (
 )
 
 // Capability is the Stremio addon-source module (ADR 0008's capability
-// surface, first populated). It holds only an HTTP client; the addons it
-// sources from are the bundled default (Cinemeta) plus whatever a user adds
-// through its settings at invocation time (ADR 0021), so metadata and search
-// work out of the box and the same registered module serves whatever else each
-// user configures. It owns no schema and imports no Platform internals.
+// surface, first populated). It holds only an HTTP client; the addons it sources
+// from are whatever a user adds through its settings, handed in at invocation
+// time (ADR 0021), so one registered module serves whatever each user
+// configures. It owns no schema and imports no Platform internals.
+//
+// It bundles no addon of its own. It used to bundle Cinemeta so that a fresh
+// install had metadata (ADR 0035); that guarantee now belongs to
+// `module-cinemeta`, a core module that cannot be switched off (ADR 0072), and
+// this module is purely what a user chose.
 type Capability struct {
 	httpClient *http.Client
 }
 
 // New builds the capability over an HTTP client (nil for a default). Addon URLs
-// are not supplied here — the bundled default is always present and user addons
-// arrive as settings on each invocation.
+// are not supplied here — they arrive as settings on each invocation.
 func New(httpClient *http.Client) *Capability {
 	return &Capability{httpClient: httpClient}
 }
 
 // moduleSettings is the shape the Stremio module reads from its user-managed
-// settings document: the list of Stremio addon base URLs to source from, and an
-// opt-out for the bundled default (Cinemeta) that is otherwise always included.
+// settings document: the list of Stremio addon base URLs to source from.
+//
+// A document written before the bundled default was removed may still carry a
+// `disableDefaultAddons` key. Unknown fields are ignored, so such a document
+// keeps working and simply means what it says — this module sources only the
+// addons named — with no migration to run.
 type moduleSettings struct {
-	Addons               []string `json:"addons"`
-	DisableDefaultAddons bool     `json:"disableDefaultAddons"`
+	Addons []string `json:"addons"`
 }
 
-// addonsFrom parses the module's settings document into a clean user-addon list
-// and the default opt-out flag.
-func addonsFrom(settings []byte) ([]string, bool, error) {
+// addonsFrom parses the module's settings document into a clean addon list.
+func addonsFrom(settings []byte) ([]string, error) {
 	if len(settings) == 0 {
-		return nil, false, nil
+		return nil, nil
 	}
 	var s moduleSettings
 	if err := json.Unmarshal(settings, &s); err != nil {
-		return nil, false, fmt.Errorf("parse module settings: %w", err)
+		return nil, fmt.Errorf("parse module settings: %w", err)
 	}
 	var out []string
 	for _, a := range s.Addons {
@@ -97,41 +112,35 @@ func addonsFrom(settings []byte) ([]string, bool, error) {
 			out = append(out, t)
 		}
 	}
-	return out, s.DisableDefaultAddons, nil
+	return out, nil
 }
 
-// clientFrom builds a client over the bundled default addon plus whatever the
-// user configured (deduped by base URL). Cinemeta is present from the get-go so
-// metadata and search work with no configuration (ADR 0035); a user can add
-// stream and other addons on top, and opt the default out. The "no addons" error
-// is only reachable if the default is disabled and nothing else is set.
+// clientFrom builds a client over the addons the user configured, deduped by
+// base URL and left in configured order — which is the priority rule the
+// metadata merge reads (metadataPriority).
+//
+// No addons is now the state of a fresh install rather than an edge case, and it
+// is an error: every provider role needs something to ask. The Platform skips a
+// search provider that errors rather than failing the search, so this reads as
+// "this module contributes nothing yet", which is the truth. The settings screen
+// renders without going through here, so the path to fixing it stays open.
 func (c *Capability) clientFrom(settings []byte) (*Client, error) {
-	userAddons, disableDefaults, err := addonsFrom(settings)
+	configured, err := addonsFrom(settings)
 	if err != nil {
 		return nil, err
 	}
-	seen := make(map[string]bool)
-	var addons []string
-	add := func(u string) {
+	seen := make(map[string]bool, len(configured))
+	addons := make([]string, 0, len(configured))
+	for _, u := range configured {
 		base := normaliseAddonURL(u)
 		if base == "" || seen[base] {
-			return
+			continue
 		}
 		seen[base] = true
 		addons = append(addons, u)
 	}
-	// The user's own addons first, the bundled default last. Order is the
-	// priority rule (metadataPriority), and a default nobody chose has no
-	// business outranking one somebody did — it is a floor, not a first voice.
-	// ADR 0035 asked for Cinemeta to be *present*, which this still honours.
-	for _, u := range userAddons {
-		add(u)
-	}
-	if !disableDefaults {
-		add(defaultAddon)
-	}
 	if len(addons) == 0 {
-		return nil, fmt.Errorf(`no Stremio addons configured; add one with configureModule (settings {"addons":["<manifest-url>"]}) or re-enable the bundled Cinemeta addon`)
+		return nil, fmt.Errorf(`no Stremio addons configured; add one in Settings › Stremio addons, or with configureModule (settings {"addons":["<manifest-url>"]})`)
 	}
 	return NewClient(c.httpClient, addons...), nil
 }

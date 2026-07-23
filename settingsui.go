@@ -9,29 +9,36 @@ import (
 
 // SettingsUI renders the module's own settings screen as SDUI (RoleSettingsUI,
 // ADR 0038): add an addon by manifest URL, view the installed addons as cards
-// (name, logo, description) with a way to configure or remove them, toggle the
-// bundled Cinemeta default, and browse a grid of installable addons (the
-// addon_catalog resource) to add without a URL. Every mutating control is an
-// Invoke of the Platform's configureModule command with the complete new
-// settings document, so the Platform stays the one that persists them. The
-// screen is returned as serialised UINode JSON — the SDK stays SDUI-agnostic.
+// (name, logo, description) with a way to configure or remove them, and browse a
+// grid of installable addons (the addon_catalog resource) to add without a URL.
+// Every mutating control is an Invoke of the Platform's configureModule command
+// with the complete new settings document, so the Platform stays the one that
+// persists them. The screen is returned as serialised UINode JSON — the SDK
+// stays SDUI-agnostic.
+//
+// It builds its clients directly rather than through clientFrom, which refuses
+// an empty addon list. That refusal is right for a provider role and wrong here:
+// with no bundled default, no addons configured is what a fresh install looks
+// like, and this screen is the only way out of it.
 func (c *Capability) SettingsUI(ctx context.Context, req v1.SettingsUIRequest) (v1.SettingsUIResponse, error) {
-	addons, disableDefaults, err := addonsFrom(req.Settings)
+	addons, err := addonsFrom(req.Settings)
 	if err != nil {
 		return v1.SettingsUIResponse{}, err
 	}
 
-	// One client over the effective addon set, so the manifest fetches the cards
+	// One client over the configured addons, so the manifest fetches the cards
 	// need are made and cached once.
-	client, err := c.clientFrom(req.Settings)
-	if err != nil {
-		return v1.SettingsUIResponse{}, err
-	}
+	client := NewClient(c.httpClient, addons...)
+	// A second over the configured addons *plus* Stremio's official directory,
+	// which is what makes the browse grid non-empty on a fresh install. It is a
+	// discovery source only: nothing it returns is sourced from unless a user
+	// installs it.
+	catalogClient := NewClient(c.httpClient, append(append([]string{}, addons...), addonCatalogSource)...)
 
 	body := []ui.El{
-		addAddonSection(addons, disableDefaults),
-		installedSection(ctx, client, addons, disableDefaults),
-		browseSection(ctx, client, addons, disableDefaults),
+		addAddonSection(addons),
+		installedSection(ctx, client, addons),
+		browseSection(ctx, catalogClient, addons),
 	}
 	screen := ui.Screen(ui.Title("Stremio addons"), ui.Group(body...))
 
@@ -42,67 +49,52 @@ func (c *Capability) SettingsUI(ctx context.Context, req v1.SettingsUIRequest) (
 	return v1.SettingsUIResponse{UI: data}, nil
 }
 
-// configureInput builds the configureModule invoke input for a given user-addon
-// list and default flag — the complete settings document the Platform persists.
-// The bundled default is never stored in the list; it is module-owned.
-func configureInput(addons []string, disableDefaults bool) map[string]any {
-	settings := map[string]any{"addons": addons}
-	if disableDefaults {
-		settings["disableDefaultAddons"] = true
-	}
-	return map[string]any{"moduleId": CapabilityID, "settings": settings}
+// configureInput builds the configureModule invoke input for a given addon list
+// — the complete settings document the Platform persists.
+func configureInput(addons []string) map[string]any {
+	return map[string]any{"moduleId": CapabilityID, "settings": map[string]any{"addons": addons}}
 }
 
 // addAddonSection is the add-by-URL form: a SubmitField whose action carries the
 // existing addons plus the "$value" placeholder the runtime fills with the typed
 // manifest URL (ADR 0038).
-func addAddonSection(addons []string, disableDefaults bool) *ui.Element {
+func addAddonSection(addons []string) *ui.Element {
 	withNew := append(append([]string{}, addons...), "$value")
 	field := ui.Component("SubmitField",
 		ui.Prop("placeholder", "Paste an addon manifest URL…"),
 		ui.Prop("submitLabel", "Add"),
-		ui.OnTap(ui.Invoke("configureModule", configureInput(withNew, disableDefaults))),
+		ui.OnTap(ui.Invoke("configureModule", configureInput(withNew))),
 	)
 	return ui.Section("Add an addon", field)
 }
 
-// installedSection renders the effective addon set as a grid of cards. The
-// bundled Cinemeta default is shown once, deduped against a user addon for the
-// same URL: as the default (a Disable that also strips any duplicate from the
-// user list) when enabled, else as a plain user addon. A configurable addon
-// carries a Configure control that opens its own configuration page.
-func installedSection(ctx context.Context, client *Client, userAddons []string, disableDefaults bool) *ui.Element {
-	defaultBase := normaliseAddonURL(defaultAddon)
+// installedSection renders the configured addons as a grid of cards, each with a
+// Remove control and, where the addon exposes one, a Configure control that
+// opens its own configuration page.
+//
+// With nothing configured it is an empty state rather than an empty grid. That
+// is now a state a real install starts in — there is no bundled addon any more —
+// so it has to say what to do next rather than look broken.
+func installedSection(ctx context.Context, client *Client, userAddons []string) *ui.Element {
+	if len(userAddons) == 0 {
+		return ui.Section("Installed addons",
+			ui.EmptyState("collections", "No Stremio addons yet — paste a manifest URL above, or install one from the list below. Mosaic already has metadata without them; addons are what add streams and other sources."))
+	}
+
 	userByBase := make(map[string]string, len(userAddons))
 	for _, u := range userAddons {
 		userByBase[normaliseAddonURL(u)] = u
 	}
 
-	cards := make([]ui.El, 0)
+	cards := make([]ui.El, 0, len(userAddons))
 	for _, info := range client.InstalledAddons(ctx) {
 		var controls []ui.El
-		if info.Base == defaultBase && !disableDefaults {
-			// The bundled default. Disabling it also removes any duplicate the
-			// user added explicitly, so Cinemeta is fully gone.
-			controls = append(controls,
-				ui.Badge("Default", ui.ToneNeutral),
-				ui.Button("Disable", "ghost", ui.OnTap(ui.Invoke("configureModule", configureInput(withoutBase(userAddons, defaultBase), true)))))
-		} else {
-			if info.Configurable {
-				controls = append(controls, ui.Button("Configure", "secondary", ui.OnTap(ui.OpenURL(info.Base+"/configure"))))
-			}
-			orig := userByBase[info.Base]
-			controls = append(controls, ui.Button("Remove", "danger", ui.OnTap(ui.Invoke("configureModule", configureInput(without(userAddons, orig), disableDefaults)))))
+		if info.Configurable {
+			controls = append(controls, ui.Button("Configure", "secondary", ui.OnTap(ui.OpenURL(info.Base+"/configure"))))
 		}
+		orig := userByBase[info.Base]
+		controls = append(controls, ui.Button("Remove", "danger", ui.OnTap(ui.Invoke("configureModule", configureInput(without(userAddons, orig))))))
 		cards = append(cards, addonCard(info.Name, info.Logo, info.Description, controls...))
-	}
-
-	// When the default is disabled and Cinemeta is not otherwise present, offer
-	// to re-enable it, so the toggle stays reachable.
-	if disableDefaults && userByBase[defaultBase] == "" {
-		cards = append(cards, addonCard("Cinemeta", "", "The bundled default metadata addon — currently disabled.",
-			ui.Badge("Disabled", ui.ToneNeutral),
-			ui.Button("Enable", "secondary", ui.OnTap(ui.Invoke("configureModule", configureInput(userAddons, false))))))
 	}
 
 	return ui.Section("Installed addons", ui.Grid(cards...))
@@ -111,7 +103,7 @@ func installedSection(ctx context.Context, client *Client, userAddons []string, 
 // browseSection renders installable addons from the addon_catalog resource as a
 // grid of cards, each with its name/logo from the catalog's inline manifest.
 // Best-effort: with no addon-catalog source it shows an empty state.
-func browseSection(ctx context.Context, client *Client, userAddons []string, disableDefaults bool) *ui.Element {
+func browseSection(ctx context.Context, client *Client, userAddons []string) *ui.Element {
 	entries, err := client.AddonCatalog(ctx)
 	if err != nil || len(entries) == 0 {
 		return ui.Section("Browse addons",
@@ -119,9 +111,6 @@ func browseSection(ctx context.Context, client *Client, userAddons []string, dis
 	}
 
 	installed := make(map[string]bool)
-	if !disableDefaults {
-		installed[normaliseAddonURL(defaultAddon)] = true
-	}
 	for _, u := range userAddons {
 		installed[normaliseAddonURL(u)] = true
 	}
@@ -145,7 +134,7 @@ func browseSection(ctx context.Context, client *Client, userAddons []string, dis
 		}
 		withNew := append(append([]string{}, userAddons...), e.TransportURL)
 		cards = append(cards, addonCard(name, e.Manifest.Logo, e.Manifest.Description,
-			ui.Button("Install", "primary", ui.OnTap(ui.Invoke("configureModule", configureInput(withNew, disableDefaults))))))
+			ui.Button("Install", "primary", ui.OnTap(ui.Invoke("configureModule", configureInput(withNew))))))
 	}
 	disclaimer := ui.Banner("Mosaic doesn't support every Stremio addon. This list is filtered to likely-compatible ones, but addons are community-made — add them at your own risk.", ui.ToneWarning)
 	if len(cards) == 0 {
@@ -239,17 +228,6 @@ func without(addons []string, target string) []string {
 			continue
 		}
 		out = append(out, a)
-	}
-	return out
-}
-
-// withoutBase returns addons with every entry normalising to base removed.
-func withoutBase(addons []string, base string) []string {
-	out := make([]string, 0, len(addons))
-	for _, a := range addons {
-		if normaliseAddonURL(a) != base {
-			out = append(out, a)
-		}
 	}
 	return out
 }
