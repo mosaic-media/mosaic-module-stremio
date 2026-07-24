@@ -20,7 +20,7 @@ import (
 func TestModuleImportsOnlyPublishedContracts(t *testing.T) {
 	const (
 		sdkPrefix      = "github.com/mosaic-media/sdk/"
-		sduiPrefix     = "github.com/mosaic-media/sdui/"
+		sduiPrefix     = "github.com/mosaic-media/contracts/"
 		platformPrefix = "github.com/mosaic-media/platform/"
 	)
 

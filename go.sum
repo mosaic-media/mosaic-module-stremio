@@ -1,9 +1,9 @@
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
+github.com/mosaic-media/contracts v0.12.0 h1:Br3axl4IzguQKOx/PxJbHPv+NKoZMKfFqhQwpjab6Os=
+github.com/mosaic-media/contracts v0.12.0/go.mod h1:VUs3n+kdo2mLdmfxytxHcq5OXD+qpCzlBg+NcdSy5P8=
 github.com/mosaic-media/sdk v0.20.0 h1:Cr10lYqfsq4LgcXwIFvciWKsUwgfCveFcka3HJidptA=
 github.com/mosaic-media/sdk v0.20.0/go.mod h1:E+B7qxfjCSmymJPnBHN2/j38aM9+qAJbdaTVZBHHuyQ=
-github.com/mosaic-media/sdui v0.6.1 h1:EFxbd8b1HmAl0mllEJ8GCStkfA6RSTaEIZilCUugiRM=
-github.com/mosaic-media/sdui v0.6.1/go.mod h1:U2jxF+nZzupVfSU/ysMXOX1XZ1COhP89UoYA5SE8FrM=
 github.com/santhosh-tekuri/jsonschema/v5 v5.3.1 h1:lZUw3E0/J3roVtGQ+SCrUrg3ON6NgVqpn3+iol9aGu4=
 github.com/santhosh-tekuri/jsonschema/v5 v5.3.1/go.mod h1:uToXkOrWAZ6/Oc07xWQrPOhJotwFIyu2bBVN41fcDUY=
 google.golang.org/protobuf v1.36.11 h1:fV6ZwhNocDyBLK0dj+fg8ektcVegBBuEolpbTQyBNVE=

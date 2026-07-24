@@ -12,7 +12,7 @@ point.
 ## The boundary is the point
 
 - **Import only [`sdk`](https://github.com/mosaic-media/sdk),
-  [`sdui`](https://github.com/mosaic-media/sdui) and the standard library.**
+  [`sdui`](https://github.com/mosaic-media/contracts) and the standard library.**
   `boundary_test.go` parses every import and fails on anything else. `sdui` is
   allowed because this module authors its own settings screen
   ([ADR 0038](https://github.com/mosaic-media/architecture/blob/main/docs/adr/0038-module-contributed-settings-ui.md))
