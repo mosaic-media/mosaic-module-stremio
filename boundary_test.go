@@ -3,7 +3,7 @@ package stremio_test
 import (
 	"go/parser"
 	"go/token"
-	"os"
+	"io/fs"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,23 +22,40 @@ func TestModuleImportsOnlyPublishedContracts(t *testing.T) {
 		sdkPrefix      = "github.com/mosaic-media/sdk/"
 		sduiPrefix     = "github.com/mosaic-media/contracts/"
 		platformPrefix = "github.com/mosaic-media/platform/"
+		// This module's own path. cmd/ imports the capability it serves, which
+		// is the one self-import there is and is not a boundary crossing.
+		selfPath = "github.com/mosaic-media/module-stremio-addons"
 	)
 
-	entries, err := os.ReadDir(".")
+	// Walked rather than a flat ReadDir of ".". The module gained a cmd/
+	// directory when it learned to run as its own process (ADR 0064), and a
+	// check that only looked at the root would have declared the boundary clean
+	// while never reading the one file that imports the harness.
+	var sources []string
+	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+		sources = append(sources, path)
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("read package dir: %v", err)
+		t.Fatalf("walking the module: %v", err)
 	}
 
 	fset := token.NewFileSet()
 	checked := 0
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
+	for _, name := range sources {
 		checked++
 
-		file, err := parser.ParseFile(fset, filepath.Join(".", name), nil, parser.ImportsOnly)
+		file, err := parser.ParseFile(fset, name, nil, parser.ImportsOnly)
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}
@@ -50,8 +67,14 @@ func TestModuleImportsOnlyPublishedContracts(t *testing.T) {
 			switch {
 			// Standard-library imports have no dot in their first segment.
 			case !strings.Contains(strings.SplitN(path, "/", 2)[0], "."):
+			case path == selfPath || strings.HasPrefix(path, selfPath+"/"):
+				// The module importing itself: cmd/ serving the capability.
 			case strings.HasPrefix(path, sdkPrefix):
-				// The published SDK — the primary contract a module builds against.
+				// The published SDK — the primary contract a module builds
+				// against. sdk/host sits under this prefix, which is correct:
+				// the harness is published beside the contract precisely so a
+				// module needs no dependency the SDK did not already sanction
+				// (ADR 0064).
 			case strings.HasPrefix(path, sduiPrefix):
 				// The shared SDUI contract — a module builds its own settings UI
 				// with the producer binding (ADR 0038, ADR 0025).

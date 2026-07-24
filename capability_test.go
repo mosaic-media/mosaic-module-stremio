@@ -348,6 +348,14 @@ func (f *fakeContent) AttachContentPart(_ context.Context, cmd v1.AttachContentP
 	return v1.AttachContentPartResult{Part: p}, nil
 }
 
+// SetContentArtwork arrived with SDK v0.21.0 (ADR 0074's candidate set). This
+// module writes no artwork of its own — a Stremio addon supplies whatever
+// poster it happens to carry through the metadata path — so the fake satisfies
+// the interface and records nothing.
+func (f *fakeContent) SetContentArtwork(_ context.Context, cmd v1.SetContentArtworkCommand) (v1.SetContentArtworkResult, error) {
+	return v1.SetContentArtworkResult{Node: v1.Node{ID: cmd.NodeID, Artwork: cmd.Artwork}}, nil
+}
+
 func (f *fakeContent) BindContentSource(_ context.Context, cmd v1.BindContentSourceCommand) (v1.BindContentSourceResult, error) {
 	f.binds = append(f.binds, cmd)
 	b := v1.SourceBinding{
